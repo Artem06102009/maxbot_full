@@ -67,7 +67,14 @@ async function loadProfile() {
     document.getElementById("profile-xp-fill").style.width = `${data.level.progress_percent}%`;
     document.getElementById("profile-helped").textContent = data.helped_count;
     document.getElementById("profile-questions").textContent = data.questions_count;
+    const streakEl = document.getElementById("profile-streak");
+    if (streakEl) streakEl.textContent = data.help_streak || 0;
     document.getElementById("profile-rank").textContent = `#${data.rank}`;
+    const examBanner = document.getElementById("exam-banner");
+    if (examBanner) {
+      examBanner.classList.toggle("hidden", !data.exam_mode);
+      examBanner.textContent = data.exam_label || "";
+    }
     document.getElementById("shop-coins").textContent = data.coins;
     document.getElementById("header-class").textContent = data.class_chat_id
       ? (isTeacher ? "Кабинет педагога · чат класса" : `Чат класса в MAX · место #${data.rank}`)
@@ -145,10 +152,16 @@ function renderQuestions(items) {
     if (!closed && !own) {
       actions = `<button class="btn btn-ghost" onclick="handleHelp(${item.id})">${isHelper ? "Вы помощник" : "Я помог"}</button>`;
     }
-    if (!closed && own) {
-      actions += `<button class="btn btn-primary" onclick="handleThanks(${item.id})" ${item.helper_id ? "" : "disabled"}>Сказать спасибо</button>`;
+    if (!closed && own && item.helper_id) {
+      actions += `<div class="quality-actions">
+        <button class="btn btn-primary" onclick="handleThanks(${item.id}, 'clear')">Понятно</button>
+        <button class="btn btn-ghost" onclick="handleThanks(${item.id}, 'short')">Коротко</button>
+        <button class="btn btn-ghost" onclick="handleThanks(${item.id}, 'error')">С ошибкой</button>
+      </div>`;
+    } else if (!closed && own) {
+      actions += `<button class="btn btn-primary" disabled>Сначала нужен ответ в чате</button>`;
     }
-    if (!closed) {
+    if (!closed && !item.hint_blocked) {
       actions += `<button class="btn btn-ghost" onclick="handleHint(${item.id})">Подсказка ГигаЧат</button>`;
     }
     if (currentUserData?.role === "teacher" && !item.is_exemplar) {
@@ -183,7 +196,7 @@ async function handleHint(questionId) {
   showToast("Готовлю подсказку…");
   const result = await (await fetch("/api/questions/hint", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-User-Id": String(currentUserId) },
     body: JSON.stringify({ user_id: currentUserId, question_id: questionId }),
   })).json();
   if (!result.success) {
@@ -196,7 +209,7 @@ async function handleHint(questionId) {
 async function handleHelp(questionId) {
   const res = await fetch("/api/questions/help", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-User-Id": String(currentUserId) },
     body: JSON.stringify({ user_id: currentUserId, question_id: questionId }),
   });
   const result = await res.json();
@@ -204,11 +217,11 @@ async function handleHelp(questionId) {
   loadQuestions();
 }
 
-async function handleThanks(questionId) {
+async function handleThanks(questionId, quality = "clear") {
   const res = await fetch("/api/questions/thanks", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: currentUserId, question_id: questionId }),
+    headers: { "Content-Type": "application/json", "X-User-Id": String(currentUserId) },
+    body: JSON.stringify({ user_id: currentUserId, question_id: questionId, quality }),
   });
   const result = await res.json();
   showToast(result.message || result.error);
@@ -235,7 +248,7 @@ async function loadLeaderboard() {
           <span class="avatar">${escapeHtml(initials(item.name))}</span>
           <div class="leader-info">
             <div class="leader-name">${escapeHtml(item.name)}${isCurrent ? " · вы" : ""}</div>
-            <div class="leader-sub">${escapeHtml(item.level_title)} · помог ${item.helped_count} раз</div>
+            <div class="leader-sub">${escapeHtml(item.level_title)} · помог ${item.helped_count} · серия ${item.help_streak || 0} дн.</div>
           </div>
           <div class="leader-xp">${item.xp} XP</div>
         </div>
@@ -272,6 +285,11 @@ async function loadRewards() {
   try {
     const data = await (await fetch(`/api/rewards?user_id=${currentUserId}`)).json();
     document.getElementById("shop-coins").textContent = data.user_coins;
+    const lockEl = document.getElementById("shop-lock");
+    if (lockEl) {
+      lockEl.classList.toggle("hidden", !data.shop_locked);
+      lockEl.textContent = data.shop_message || "";
+    }
     if (!data.rewards.length) {
       grid.innerHTML = '<p class="empty-hint">Учитель пока не добавил награды.</p>';
     } else {
@@ -282,7 +300,7 @@ async function loadRewards() {
             <div class="reward-title">${escapeHtml(rew.title)}</div>
             <div class="reward-desc">${escapeHtml(rew.description)}</div>
           </div>
-          <button class="btn btn-gold" ${data.user_coins >= rew.price_coins ? "" : "disabled"} onclick="handleBuyReward(${rew.id})">
+          <button class="btn btn-gold" ${!data.shop_locked && data.user_coins >= rew.price_coins ? "" : "disabled"} onclick="handleBuyReward(${rew.id})">
             ${rew.price_coins} 🪙
           </button>
         </div>
@@ -310,10 +328,10 @@ async function loadRewards() {
 async function handleBuyReward(rewardId) {
   const result = await (await fetch("/api/rewards/buy", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-User-Id": String(currentUserId) },
     body: JSON.stringify({ user_id: currentUserId, reward_id: rewardId }),
   })).json();
-  showToast(result.message || result.error || "Готово");
+  showToast(result.message || result.error || result.detail || "Готово");
   loadProfile();
   loadRewards();
 }
@@ -363,6 +381,18 @@ async function loadTeacherData() {
         </label>
       `).join("");
     }
+    const examStatus = document.getElementById("exam-status");
+    if (examStatus) examStatus.textContent = cls.exam_label || "Контрольной нет. Можно включить на сегодня: без ГигаЧат и лавки.";
+    const examToggles = document.getElementById("exam-subjects");
+    if (examToggles && cls.subjects) {
+      const examAll = (cls.exam_subjects || []).includes("*");
+      examToggles.innerHTML = cls.subjects.map((name) => `
+        <label class="toggle">
+          <input type="checkbox" value="${escapeHtml(name)}" ${examAll || (cls.exam_subjects || []).includes(name) ? "checked" : ""}>
+          ${escapeHtml(name)}
+        </label>
+      `).join("");
+    }
     const preview = document.getElementById("week-export-preview");
     if (preview) {
       const week = await (await fetch(`/api/teacher/export?teacher_id=${currentUserId}`)).json();
@@ -400,7 +430,7 @@ async function loadTeacherData() {
 async function handleReviewRequest(requestId, action) {
   const result = await (await fetch("/api/teacher/request/review", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-User-Id": String(currentUserId) },
     body: JSON.stringify({ teacher_id: currentUserId, request_id: requestId, action }),
   })).json();
   showToast(result.message || "Готово");
@@ -412,7 +442,7 @@ async function handleCreateReward(event) {
   event.preventDefault();
   const result = await (await fetch("/api/teacher/reward/create", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-User-Id": String(currentUserId) },
     body: JSON.stringify({
       teacher_id: currentUserId,
       title: document.getElementById("rew-title").value.trim(),
@@ -428,18 +458,41 @@ async function handleCreateReward(event) {
 async function handleStrict(enabled) {
   const result = await (await fetch("/api/teacher/strict", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-User-Id": String(currentUserId) },
     body: JSON.stringify({ teacher_id: currentUserId, enabled }),
   })).json();
   showToast(result.strict_mode ? "ГигаЧат выключен везде" : "ГигаЧат снова можно");
   loadTeacherData();
 }
 
+async function handleExam(enabled) {
+  const result = await (await fetch("/api/teacher/exam", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-User-Id": String(currentUserId) },
+    body: JSON.stringify({ teacher_id: currentUserId, enabled }),
+  })).json();
+  showToast(result.exam_label || (enabled ? "Контрольная включена" : "Контрольная снята"));
+  loadTeacherData();
+  loadProfile();
+}
+
+async function saveExamSubjects() {
+  const checked = [...document.querySelectorAll("#exam-subjects input:checked")].map((el) => el.value);
+  const result = await (await fetch("/api/teacher/exam", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-User-Id": String(currentUserId) },
+    body: JSON.stringify({ teacher_id: currentUserId, enabled: true, subjects: checked.length ? checked : ["*"], days: 1 }),
+  })).json();
+  showToast(result.exam_label || "Контрольная обновлена");
+  loadTeacherData();
+  loadProfile();
+}
+
 async function saveStrictSubjects() {
   const checked = [...document.querySelectorAll("#strict-subjects input:checked")].map((el) => el.value);
   const result = await (await fetch("/api/teacher/strict", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-User-Id": String(currentUserId) },
     body: JSON.stringify({ teacher_id: currentUserId, subjects: checked }),
   })).json();
   if (result.strict_subjects?.length) showToast("ГигаЧат выключен: " + result.strict_subjects.join(", "));
@@ -498,7 +551,7 @@ async function handleExemplar(questionId) {
   const note = prompt("Короткий конспект для шпаргалки (формула, план, правило):", "") || "";
   const result = await (await fetch("/api/teacher/exemplar", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-User-Id": String(currentUserId) },
     body: JSON.stringify({ teacher_id: currentUserId, question_id: questionId, note }),
   })).json();
   showToast(result.message || "Добавлено в шпаргалку");
@@ -514,7 +567,7 @@ async function handleAwardTeacherBadge() {
   }
   const result = await (await fetch("/api/teacher/award_badge", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-User-Id": String(currentUserId) },
     body: JSON.stringify({ teacher_id: currentUserId, student_id: parseInt(studentId, 10) }),
   })).json();
   showToast(result.message || "Готово");

@@ -76,6 +76,7 @@
           </button>
         </div>
       </header>
+      <div id="exam-banner" class="exam-banner hidden"></div>
 
       <main class="sf-content">
         <section id="tab-class" class="tab-pane active">
@@ -128,11 +129,12 @@
           <div class="stats-grid">
             <div class="card stat-card"><span class="stat-val" id="profile-helped">0</span><span>Помог классу</span></div>
             <div class="card stat-card"><span class="stat-val" id="profile-questions">0</span><span>Вопросов</span></div>
+            <div class="card stat-card"><span class="stat-val" id="profile-streak">0</span><span>Серия дней</span></div>
             <div class="card stat-card"><span class="stat-val" id="profile-rank">#—</span><span>Место в топе</span></div>
           </div>
           <div class="card info-card">
             <h4>Как прокачать звание</h4>
-            <p>В чате класса в MAX напишите <code>/ask …</code>, объясните решение обычным сообщением и нажмите «Я помог». За это — <b>+15 XP</b> и <b>+5 спасибок</b>.</p>
+            <p>В чате класса напишите <code>/ask …</code>, отвечайте реплаем. Автор ставит оценку: понятно +50 XP, коротко +25, с ошибкой +10 и вопрос остаётся открытым. Серия дней за ежедневную помощь.</p>
           </div>
           <div class="card">
             <h4>Для родителя</h4>
@@ -166,6 +168,7 @@
             <p>Обменивайте спасибки на бонусы от учителя</p>
           </div>
           <div class="rewards-balance-bar">Баланс: <strong id="shop-coins">0</strong> 🪙</div>
+          <p id="shop-lock" class="exam-banner hidden"></p>
           <div class="rewards-grid" id="rewards-container"></div>
           <h4 class="block-title">Мои запросы</h4>
           <div id="my-requests-list" class="requests-list"></div>
@@ -185,6 +188,16 @@
               <button type="button" class="btn btn-ghost flex-1" onclick="handleStrict(true)">Выкл ИИ везде</button>
               <button type="button" class="btn btn-ghost flex-1" onclick="handleStrict(false)">Разрешить ИИ</button>
               <button type="button" class="btn btn-gold flex-1" onclick="handleDigest()">Дайджест в чат</button>
+            </div>
+          </div>
+          <div class="card">
+            <h4>Режим контрольной</h4>
+            <p class="muted" id="exam-status">Контрольной нет. Вопросы одноклассникам можно, ГигаЧат и лавка выключены на выбранный день.</p>
+            <div id="exam-subjects" class="subject-toggles"></div>
+            <div class="teacher-req-actions">
+              <button type="button" class="btn btn-primary flex-1" onclick="saveExamSubjects()">Включить на сегодня</button>
+              <button type="button" class="btn btn-ghost flex-1" onclick="handleExam(true)">Все темы сегодня</button>
+              <button type="button" class="btn btn-ghost flex-1" onclick="handleExam(false)">Снять контрольную</button>
             </div>
           </div>
           <div class="card">

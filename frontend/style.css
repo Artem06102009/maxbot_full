@@ -281,7 +281,17 @@ body {
 .progress-bar-fill { height: 100%; background: linear-gradient(90deg, #7b61ff, #4aa3ff); }
 .night-hint { margin-top: 10px; font-size: 13px; color: #8a6d00; }
 .hidden { display: none !important; }
-.stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 12px; }
+.exam-banner {
+  margin: 0 16px 8px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: #fff4d6;
+  color: #7a5b00;
+  font-size: 13px;
+  font-weight: 600;
+}
+.quality-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px; }
 .stat-card { text-align: center; margin: 0; }
 .stat-val { display: block; font-size: 22px; font-weight: 800; color: var(--sf-purple-dark); }
 .stat-card span:last-child { font-size: 12px; color: var(--sf-muted); }
