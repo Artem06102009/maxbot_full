@@ -27,14 +27,14 @@ async def run_bot_polling():
     while True:
         try:
             data = await client.get_updates(limit=100, timeout=30, marker=marker)
+            new_marker = data.get("marker")
+            if new_marker is not None:
+                marker = new_marker
             for update in data.get("updates", []):
                 try:
                     await handle_update(update, client=client)
                 except Exception:
                     pass
-            new_marker = data.get("marker")
-            if new_marker is not None:
-                marker = new_marker
         except asyncio.CancelledError:
             break
         except Exception:

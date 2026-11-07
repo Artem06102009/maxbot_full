@@ -60,9 +60,19 @@ def _migrate_sqlite(sync_conn):
         cols = {c["name"] for c in insp.get_columns("answers")}
         if "quality" not in cols:
             sync_conn.execute(text("ALTER TABLE answers ADD COLUMN quality TEXT"))
+    if "rewards" in tables:
+        cols = {c["name"] for c in insp.get_columns("rewards")}
+        for col, ddl in {
+            "max_per_student": "INTEGER DEFAULT 1",
+            "stock": "INTEGER",
+            "group_chat_id": "TEXT",
+        }.items():
+            if col not in cols:
+                sync_conn.execute(text(f"ALTER TABLE rewards ADD COLUMN {col} {ddl}"))
     if "class_settings" in tables:
         cols = {c["name"] for c in insp.get_columns("class_settings")}
         for col, ddl in {
+            "title": "TEXT",
             "last_digest_on": "TEXT",
             "exam_until": "TEXT",
             "exam_subjects": "TEXT",

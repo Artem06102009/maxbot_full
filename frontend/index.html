@@ -1,59 +1,65 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="ru" data-theme="dark">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Лига Помощников</title>
   <script src="https://st.max.ru/js/max-web-app.js"></script>
+  <!-- Google Material Symbols -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div class="sf-app">
+    <!-- Desktop Navigation Rail -->
     <aside class="sf-rail" aria-label="Навигация">
       <div class="sf-logo" title="Лига Помощников">
         <span>Л</span>
       </div>
       <nav class="sf-rail-nav">
-        <button class="rail-btn active" data-tab="class" onclick="switchTab('class', this)" title="Класс">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v9A2.5 2.5 0 0 1 17.5 17H9l-4.2 3.15A.8.8 0 0 1 3.5 19.5V5.5Z"/></svg>
-          <span>Класс</span>
-        </button>
-        <button class="rail-btn" data-tab="cheatsheet" onclick="switchTab('cheatsheet', this)" title="Шпаргалка">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Zm8 1.5V9h4.5"/></svg>
-          <span>Шпаргалка</span>
-        </button>
-        <button class="rail-btn" data-tab="profile" onclick="switchTab('profile', this)" title="Профиль">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4.5 4.5 0 1 0-4.5-4.5A4.5 4.5 0 0 0 12 12Zm0 2c-4.4 0-8 2.2-8 5v1.5h16V19c0-2.8-3.6-5-8-5Z"/></svg>
-          <span>Профиль</span>
-        </button>
-        <button class="rail-btn" data-tab="leaderboard" onclick="switchTab('leaderboard', this)" title="Рейтинг">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 21V9h3v12H7Zm7 0V4h3v17h-3Zm7 0v-8h3v8h-3ZM2 21v-5h3v5H2Z"/></svg>
+        <button class="rail-btn active" data-tab="leaderboard" onclick="switchTab('leaderboard', this)" title="Рейтинг">
+          <span class="material-symbols-outlined">leaderboard</span>
           <span>Рейтинг</span>
         </button>
-        <button class="rail-btn" data-tab="achievements" onclick="switchTab('achievements', this)" title="Ачивки">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 9.5 8.5 3 9.2l5 4.7L6.6 20 12 16.8 17.4 20 16 13.9l5-4.7-6.5-.7L12 2Z"/></svg>
-          <span>Ачивки</span>
-        </button>
         <button class="rail-btn" data-tab="rewards" onclick="switchTab('rewards', this)" title="Лавка">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h16l-1.2 11.2A2 2 0 0 1 16.8 21H7.2a2 2 0 0 1-2-1.8L4 8Zm4-3.5A4 4 0 0 1 12 1a4 4 0 0 1 4 3.5V8H8V4.5Z"/></svg>
+          <span class="material-symbols-outlined">shopping_bag</span>
           <span>Лавка</span>
         </button>
-        <button class="rail-btn" id="nav-teacher-btn" data-tab="teacher" onclick="switchTab('teacher', this)" title="Учитель">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2 8l10 5 8-4v6h2V8L12 3Zm-6 9.2V16c0 2.2 2.7 4 6 4s6-1.8 6-4v-3.8l-6 3-6-3Z"/></svg>
+        <button class="rail-btn" data-tab="gigachat" onclick="switchTab('gigachat', this)" title="ГигаЧат">
+          <span class="material-symbols-outlined">smart_toy</span>
+          <span>ГигаЧат</span>
+        </button>
+        <button class="rail-btn" data-tab="achievements" onclick="switchTab('achievements', this)" title="Ачивки">
+          <span class="material-symbols-outlined">military_tech</span>
+          <span>Ачивки</span>
+        </button>
+        <button class="rail-btn" data-tab="profile" onclick="switchTab('profile', this)" title="Профиль">
+          <span class="material-symbols-outlined">person</span>
+          <span>Профиль</span>
+        </button>
+        <button class="rail-btn" id="nav-teacher-btn" data-tab="teacher" onclick="switchTab('teacher', this)" title="Учитель" style="display: none;">
+          <span class="material-symbols-outlined">school</span>
           <span>Учитель</span>
         </button>
       </nav>
     </aside>
 
+    <!-- Main Content Stage -->
     <div class="sf-stage">
       <header class="sf-header">
         <div class="sf-brand">
           <div class="sf-logo mobile-only">Л</div>
           <div>
             <div class="sf-brand-title">Лига Помощников</div>
-            <div class="sf-brand-sub" id="header-class">Чат класса · 11 «А»</div>
+            <!-- Class Selector Pill (Выбор разных чатов) -->
+            <button class="class-picker-btn" onclick="openClassPicker()" title="Переключить класс">
+              <span class="material-symbols-outlined" style="font-size: 15px;">school</span>
+              <span id="active-class-title">11 «А» класс</span>
+              <span class="picker-arrow">▾</span>
+            </button>
           </div>
         </div>
+
         <div class="sf-header-actions">
           <div id="demo-bar" class="demo-bar">
             <select id="demo-user-select" onchange="switchDemoUser(this.value)" aria-label="Тестовый пользователь">
@@ -63,10 +69,17 @@
               <option value="9999">Мария Ивановна</option>
             </select>
           </div>
-          <div class="coins-pill" title="Спасибки">
-            <span>🪙</span>
+
+          <!-- Dark/Light Theme Toggle -->
+          <button class="theme-toggle-btn" onclick="toggleTheme()" aria-label="Переключить тему" title="Переключить тему">
+            <span class="material-symbols-outlined" id="theme-icon">light_mode</span>
+          </button>
+
+          <div class="coins-pill" title="Спасибки" onclick="switchTab('rewards')">
+            <span class="material-symbols-outlined" style="font-size: 18px;">monetization_on</span>
             <strong id="header-coins">0</strong>
           </div>
+
           <button class="user-chip" onclick="switchTab('profile')" type="button">
             <span class="avatar" id="header-avatar">А</span>
             <span class="user-chip-meta">
@@ -76,37 +89,126 @@
           </button>
         </div>
       </header>
+
       <div id="exam-banner" class="exam-banner hidden"></div>
 
       <main class="sf-content">
-        <section id="tab-class" class="tab-pane active">
-          <div class="chat-layout">
-            <div class="chat-toolbar">
-              <h2>Чат класса в MAX</h2>
-              <input id="class-search" class="search-input" type="search" placeholder="Поиск по вопросам" oninput="filterQuestions()">
+        <!-- 1. LEADERBOARD (Рейтинг) -->
+        <section id="tab-leaderboard" class="tab-pane active">
+          <div class="section-heading">
+            <div>
+              <h3>Доска почёта</h3>
+              <p>Топ помощников класса</p>
             </div>
-            <div id="questions-feed" class="chat-feed">
-              <div class="loading-spinner">Загрузка вопросов из чата класса…</div>
+          </div>
+
+          <!-- Current User Position Sticky Banner -->
+          <div class="card" id="my-rank-banner" style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+              <strong id="my-rank-title">Ваша позиция</strong>
+              <div class="muted" id="my-rank-sub">Отвечайте реплаем в чате класса в MAX!</div>
             </div>
-            <div class="composer hint-bar">
-              <div>
-                <strong>Вопросы задают в групповом чате MAX</strong>
-                <p class="muted">Добавьте бота в чат класса и напишите:</p>
-                <code>/ask Как решить №245 по геометрии?</code>
+            <div style="font-size: 18px; font-weight: 800; color: var(--sf-purple);" id="my-rank-xp">0 XP</div>
+          </div>
+
+          <!-- Top 3 Podium (Пьедестал) -->
+          <div class="card">
+            <div id="podium-container" class="podium-wrap"></div>
+          </div>
+
+          <!-- 4th Place and below in Column List (Остальные ниже в столбик) -->
+          <div class="card">
+            <h4 class="block-title" style="font-size: 16px; margin-bottom: 12px;">Участники рейтинга</h4>
+            <div class="leaderboard-list" id="leaderboard-container">
+              <div class="loading-spinner">Загрузка рейтинга…</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 2. REWARDS SHOP (Школьная лавка) -->
+        <section id="tab-rewards" class="tab-pane">
+          <div class="section-heading">
+            <div>
+              <h3>Школьная лавка</h3>
+              <p>Обменивайте спасибки на бонусы от учителя с персональными лимитами</p>
+            </div>
+          </div>
+
+          <div class="rewards-balance-bar">
+            <span class="material-symbols-outlined" style="font-size: 20px;">account_balance_wallet</span>
+            Баланс: <strong id="shop-coins">0</strong> спасибок
+          </div>
+
+          <p id="shop-lock" class="exam-banner hidden"></p>
+
+          <div class="rewards-grid" id="rewards-container">
+            <div class="loading-spinner">Загрузка лавки…</div>
+          </div>
+
+          <div class="card" style="margin-top: 20px;">
+            <h4 class="block-title" style="font-size: 16px; margin-bottom: 10px;">Мои запросы на награды</h4>
+            <div id="my-requests-list" class="requests-list">
+              <p class="empty-hint">Пока нет запросов.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- 3. GIGACHAT AI TUTOR (Диалог с ГигаЧатом) -->
+        <section id="tab-gigachat" class="tab-pane">
+          <div class="section-heading">
+            <div>
+              <h3>ГигаЧат Наставник</h3>
+              <p>Умный помощник по школьной программе на базе библиотеки GigaChat</p>
+            </div>
+            <button type="button" class="btn btn-ghost" onclick="clearGigaChatHistory()" title="Очистить диалог">
+              <span class="material-symbols-outlined">refresh</span>
+              <span>Новый диалог</span>
+            </button>
+          </div>
+
+          <!-- Quick Topic Suggestion Chips -->
+          <div class="gigachat-suggestions">
+            <button type="button" class="suggestion-chip" onclick="sendQuickPrompt('Объясни тему простыми словами с примером')">Объясни тему простыми словами</button>
+            <button type="button" class="suggestion-chip" onclick="sendQuickPrompt('Помоги составить алгоритм решения задачи')">Алгоритм решения</button>
+            <button type="button" class="suggestion-chip" onclick="sendQuickPrompt('Какая формула здесь применяется?')">Формулы и правила</button>
+            <button type="button" class="suggestion-chip" onclick="sendQuickPrompt('Составь план подготовки к контрольной')">План к уроку</button>
+          </div>
+
+          <!-- Chat Dialog Container -->
+          <div class="card gigachat-dialog-card">
+            <div id="gigachat-messages" class="gigachat-messages">
+              <div class="giga-msg assistant">
+                <div class="giga-msg-avatar">
+                  <span class="material-symbols-outlined">smart_toy</span>
+                </div>
+                <div class="giga-msg-bubble">Здравствуйте! Я ГигаЧат — ваш помощник в учебе. Напишите условие задачи, формулу или тему, и я помогу разобраться шаг за шагом.</div>
               </div>
             </div>
+
+            <!-- Input Box -->
+            <form id="gigachat-form" class="gigachat-input-box" onsubmit="handleSendGigaChat(event)">
+              <input type="text" id="gigachat-input" placeholder="Задайте вопрос по уроку или задаче..." required autocomplete="off">
+              <button type="submit" id="gigachat-send-btn" class="btn btn-primary" title="Отправить">
+                <span class="material-symbols-outlined">send</span>
+              </button>
+            </form>
           </div>
         </section>
 
-        <section id="tab-cheatsheet" class="tab-pane">
+        <!-- 4. ACHIEVEMENTS (Достижения) -->
+        <section id="tab-achievements" class="tab-pane">
           <div class="section-heading">
-            <h3>Шпаргалка класса</h3>
-            <p>Эталоны учителя — одна страница к уроку, без телефона</p>
-            <button type="button" class="btn btn-primary" onclick="downloadCheatsheetPdf()">Скачать PDF</button>
+            <div>
+              <h3>Достижения</h3>
+              <p>Челленджи класса за помощь одноклассникам</p>
+            </div>
           </div>
-          <div id="cheatsheet-container"></div>
+          <div class="achievements-grid" id="achievements-container">
+            <div class="loading-spinner">Загрузка достижений…</div>
+          </div>
         </section>
 
+        <!-- 5. PROFILE (Профиль) -->
         <section id="tab-profile" class="tab-pane">
           <div class="profile-hero card">
             <div class="avatar xl" id="profile-avatar">А</div>
@@ -116,6 +218,7 @@
             </div>
             <div class="level-badge" id="profile-level-num">1 ур.</div>
           </div>
+
           <div class="card">
             <div class="progress-labels">
               <span>Прогресс звания</span>
@@ -124,119 +227,123 @@
             <div class="progress-bar-bg">
               <div id="profile-xp-fill" class="progress-bar-fill" style="width: 0%"></div>
             </div>
-            <p id="night-hint" class="night-hint hidden">🌙 Тихий час: опыт за помощь начислится утром.</p>
+            <p id="night-hint" class="night-hint hidden">
+              <span class="material-symbols-outlined" style="font-size: 16px;">bedtime</span>
+              <span>Тихий час: опыт за ночную помощь начислится утром в 07:00.</span>
+            </p>
           </div>
+
           <div class="stats-grid">
-            <div class="card stat-card"><span class="stat-val" id="profile-helped">0</span><span>Помог классу</span></div>
-            <div class="card stat-card"><span class="stat-val" id="profile-questions">0</span><span>Вопросов</span></div>
-            <div class="card stat-card"><span class="stat-val" id="profile-streak">0</span><span>Серия дней</span></div>
-            <div class="card stat-card"><span class="stat-val" id="profile-rank">#—</span><span>Место в топе</span></div>
+            <div class="card stat-card">
+              <span class="stat-val" id="profile-helped">0</span>
+              <span>Помог классу</span>
+            </div>
+            <div class="card stat-card">
+              <span class="stat-val" id="profile-questions">0</span>
+              <span>Вопросов</span>
+            </div>
+            <div class="card stat-card">
+              <span class="stat-val" id="profile-streak">0</span>
+              <span>Серия дней</span>
+            </div>
+            <div class="card stat-card">
+              <span class="stat-val" id="profile-rank">#—</span>
+              <span>Место в топе</span>
+            </div>
           </div>
+
           <div class="card info-card">
-            <h4>Как прокачать звание</h4>
-            <p>В чате класса напишите <code>/ask …</code>, отвечайте реплаем. Автор ставит оценку: понятно +50 XP, коротко +25, с ошибкой +10 и вопрос остаётся открытым. Серия дней за ежедневную помощь.</p>
+            <h4 class="block-title" style="font-size: 15px; margin-bottom: 8px;">Правила Лиги Помощников</h4>
+            <p style="font-size: 13px; color: var(--sf-muted); line-height: 1.5; margin-bottom: 4px;">• <strong>В чате класса:</strong> только вопросы <code>/ask</code> и ответы реплаем.</p>
+            <p style="font-size: 13px; color: var(--sf-muted); line-height: 1.5; margin-bottom: 4px;">• <strong>В ЛС с ботом:</strong> подтверждение помощи, получение спасибок, подсказки наставника <code>/hint</code>.</p>
+            <p style="font-size: 13px; color: var(--sf-muted); line-height: 1.5;">• <strong>В лавке:</strong> обмен спасибок на реальные привилегии от учителя.</p>
           </div>
+
           <div class="card">
-            <h4>Для родителя</h4>
-            <p class="muted">Короткая ссылка за 7 дней: что спрашивал и кому помог. Не переписка класса.</p>
-            <div class="form-row">
-              <input id="parent-link" readonly>
-              <button type="button" class="btn btn-primary" onclick="copyParentLink()">Копировать</button>
+            <h4 class="block-title" style="font-size: 15px;">Отчёт для родителей</h4>
+            <p class="muted">Защищённая сводка за 7 дней: успехи и взаимовыручка без переписки класса.</p>
+            <div class="form-row" style="margin-top: 10px;">
+              <input id="parent-link" readonly value="Загрузка…">
+              <button type="button" class="btn btn-primary" onclick="copyParentLink()">
+                <span class="material-symbols-outlined">content_copy</span>
+                <span>Копировать</span>
+              </button>
             </div>
           </div>
         </section>
 
-        <section id="tab-leaderboard" class="tab-pane">
-          <div class="section-heading">
-            <h3>Доска почёта</h3>
-            <p>Топ помощников класса</p>
-          </div>
-          <div class="leaderboard-list" id="leaderboard-container"></div>
-        </section>
-
-        <section id="tab-achievements" class="tab-pane">
-          <div class="section-heading">
-            <h3>Награды</h3>
-            <p>Челленджи класса, как бейджи в Сферуме</p>
-          </div>
-          <div class="achievements-grid" id="achievements-container"></div>
-        </section>
-
-        <section id="tab-rewards" class="tab-pane">
-          <div class="section-heading">
-            <h3>Школьная лавка</h3>
-            <p>Обменивайте спасибки на бонусы от учителя</p>
-          </div>
-          <div class="rewards-balance-bar">Баланс: <strong id="shop-coins">0</strong> 🪙</div>
-          <p id="shop-lock" class="exam-banner hidden"></p>
-          <div class="rewards-grid" id="rewards-container"></div>
-          <h4 class="block-title">Мои запросы</h4>
-          <div id="my-requests-list" class="requests-list"></div>
-        </section>
-
+        <!-- 6. TEACHER CABINET (Кабинет учителя) -->
         <section id="tab-teacher" class="tab-pane">
           <div class="section-heading">
-            <h3>Кабинет учителя</h3>
-            <p>Очередь вопросов, строгий режим, награды</p>
-          </div>
-          <div class="card">
-            <h4>Без ГигаЧат сегодня</h4>
-            <p class="muted" id="strict-status">ИИ доступен по всем темам</p>
-            <div id="strict-subjects" class="subject-toggles"></div>
-            <div class="teacher-req-actions">
-              <button type="button" class="btn btn-primary flex-1" onclick="saveStrictSubjects()">Сохранить темы</button>
-              <button type="button" class="btn btn-ghost flex-1" onclick="handleStrict(true)">Выкл ИИ везде</button>
-              <button type="button" class="btn btn-ghost flex-1" onclick="handleStrict(false)">Разрешить ИИ</button>
-              <button type="button" class="btn btn-gold flex-1" onclick="handleDigest()">Дайджест в чат</button>
+            <div>
+              <h3>Кабинет учителя</h3>
+              <p>Управление лавкой с лимитами, контрольные и выгрузка отчётов</p>
             </div>
           </div>
+
           <div class="card">
             <h4>Режим контрольной</h4>
-            <p class="muted" id="exam-status">Контрольной нет. Вопросы одноклассникам можно, ГигаЧат и лавка выключены на выбранный день.</p>
+            <p class="muted" id="exam-status">Контрольной нет. При включении лавка закрывается на день.</p>
             <div id="exam-subjects" class="subject-toggles"></div>
             <div class="teacher-req-actions">
               <button type="button" class="btn btn-primary flex-1" onclick="saveExamSubjects()">Включить на сегодня</button>
-              <button type="button" class="btn btn-ghost flex-1" onclick="handleExam(true)">Все темы сегодня</button>
+              <button type="button" class="btn btn-ghost flex-1" onclick="handleExam(true)">Все темы</button>
               <button type="button" class="btn btn-ghost flex-1" onclick="handleExam(false)">Снять контрольную</button>
             </div>
           </div>
+
           <div class="card">
             <h4>Выгрузка недели</h4>
-            <p class="muted">Кто спрашивал, кто помогал, какие темы</p>
-            <div id="week-export-preview" class="muted">Откройте кабинет, чтобы загрузить сводку.</div>
+            <p class="muted">Сводка активности класса по предметам за 7 дней</p>
+            <div id="week-export-preview" class="muted" style="margin: 10px 0;">Откройте кабинет, чтобы загрузить сводку.</div>
             <div class="teacher-req-actions">
-              <button type="button" class="btn btn-primary" onclick="downloadWeekExport()">Скачать CSV</button>
+              <button type="button" class="btn btn-primary" onclick="downloadWeekExport()">
+                <span class="material-symbols-outlined">download</span>
+                <span>Скачать CSV</span>
+              </button>
             </div>
           </div>
+
           <div class="card">
             <h4>Вопросы без ответа</h4>
-            <div id="teacher-unanswered-list"></div>
+            <div id="teacher-unanswered-list">
+              <p class="empty-hint">Все вопросы разобраны!</p>
+            </div>
           </div>
+
           <div class="card">
-            <h4>Входящие заявки</h4>
-            <div id="teacher-requests-list"></div>
+            <h4>Входящие заявки на награды</h4>
+            <div id="teacher-requests-list">
+              <div class="loading-spinner">Загрузка заявок…</div>
+            </div>
           </div>
+
           <div class="card">
-            <h4>Добавить награду</h4>
+            <h4>Добавить награду в лавку с лимитом</h4>
             <form id="create-reward-form" onsubmit="handleCreateReward(event)">
               <label>Название<input type="text" id="rew-title" required placeholder="Освобождение от одного ДЗ"></label>
               <label>Описание<textarea id="rew-desc" rows="2" required placeholder="Условия применения"></textarea></label>
               <div class="form-row">
-                <label>Цена<input type="number" id="rew-price" value="50" min="5" max="500" required></label>
-                <label>Иконка
+                <label class="flex-1">Цена (спасибок)<input type="number" id="rew-price" value="50" min="5" max="500" required></label>
+                <label class="flex-1">Лимит на ученика<input type="number" id="rew-limit" value="1" min="1" max="10" required title="Сколько раз один ученик может взять награду"></label>
+              </div>
+              <div class="form-row">
+                <label class="flex-1">Общий остаток (штук, опц.)<input type="number" id="rew-stock" placeholder="Без ограничений"></label>
+                <label class="flex-1">Тип награды
                   <select id="rew-icon">
-                    <option value="📝">📝 Домашка</option>
-                    <option value="🪑">🪑 Парта</option>
-                    <option value="🎯">🎯 Проект</option>
-                    <option value="💡">💡 Консультация</option>
-                    <option value="☕️">☕️ Переменка</option>
-                    <option value="⭐️">⭐️ Звезда</option>
+                    <option value="assignment">Домашка</option>
+                    <option value="chair">Парта</option>
+                    <option value="task_alt">Проект</option>
+                    <option value="lightbulb">Консультация</option>
+                    <option value="local_cafe">Переменка</option>
+                    <option value="star">Звезда</option>
                   </select>
                 </label>
               </div>
-              <button type="submit" class="btn btn-primary full-width">Опубликовать</button>
+              <button type="submit" class="btn btn-primary full-width">Опубликовать бонус с лимитом</button>
             </form>
           </div>
+
           <div class="card">
             <h4>Вручить «Выбор учителя»</h4>
             <p class="muted">+100 XP и +50 спасибок за лучшее объяснение</p>
@@ -244,7 +351,10 @@
               <select id="teacher-award-student" class="flex-1">
                 <option value="">Выберите ученика…</option>
               </select>
-              <button type="button" class="btn btn-gold" onclick="handleAwardTeacherBadge()">Вручить</button>
+              <button type="button" class="btn btn-gold" onclick="handleAwardTeacherBadge()">
+                <span class="material-symbols-outlined">star</span>
+                <span>Вручить</span>
+              </button>
             </div>
           </div>
         </section>
@@ -252,17 +362,57 @@
     </div>
   </div>
 
+  <!-- Mobile Bottom Navigation (Purple Navbar with Icons) -->
   <nav class="bottom-nav" aria-label="Мобильная навигация">
-    <button class="nav-item active" data-tab="class" onclick="switchTab('class', this)">Класс</button>
-    <button class="nav-item" data-tab="cheatsheet" onclick="switchTab('cheatsheet', this)">Шпаргалка</button>
-    <button class="nav-item" data-tab="profile" onclick="switchTab('profile', this)">Профиль</button>
-    <button class="nav-item" data-tab="leaderboard" onclick="switchTab('leaderboard', this)">Рейтинг</button>
-    <button class="nav-item" data-tab="achievements" onclick="switchTab('achievements', this)">Ачивки</button>
-    <button class="nav-item" data-tab="rewards" onclick="switchTab('rewards', this)">Лавка</button>
-    <button class="nav-item" id="nav-teacher-btn-mobile" data-tab="teacher" onclick="switchTab('teacher', this)">Учитель</button>
+    <button class="nav-item active" data-tab="leaderboard" onclick="switchTab('leaderboard', this)">
+      <span class="material-symbols-outlined">leaderboard</span>
+      <span>Рейтинг</span>
+    </button>
+    <button class="nav-item" data-tab="rewards" onclick="switchTab('rewards', this)">
+      <span class="material-symbols-outlined">shopping_bag</span>
+      <span>Лавка</span>
+    </button>
+    <button class="nav-item" data-tab="gigachat" onclick="switchTab('gigachat', this)">
+      <span class="material-symbols-outlined">smart_toy</span>
+      <span>ГигаЧат</span>
+    </button>
+    <button class="nav-item" data-tab="achievements" onclick="switchTab('achievements', this)">
+      <span class="material-symbols-outlined">military_tech</span>
+      <span>Ачивки</span>
+    </button>
+    <button class="nav-item" data-tab="profile" onclick="switchTab('profile', this)">
+      <span class="material-symbols-outlined">person</span>
+      <span>Профиль</span>
+    </button>
+    <button class="nav-item" id="nav-teacher-btn-mobile" data-tab="teacher" onclick="switchTab('teacher', this)" style="display: none;">
+      <span class="material-symbols-outlined">school</span>
+      <span>Учитель</span>
+    </button>
   </nav>
 
+  <!-- Modal: Class Picker (Выбор разных чатов) -->
+  <div id="class-modal" class="modal-overlay hidden" onclick="closeClassPicker(event)">
+    <div class="modal-card" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3 class="block-title" style="display: flex; align-items: center; gap: 8px;">
+          <span class="material-symbols-outlined" style="color: var(--sf-purple);">school</span>
+          Выбор чата класса
+        </h3>
+        <button type="button" class="btn-close" onclick="closeClassPicker()">&times;</button>
+      </div>
+      <p class="muted">Выберите класс для просмотра рейтинга и лавки наград:</p>
+      <div id="class-list-container" class="class-list-container">
+        <div class="loading-spinner">Загрузка чатов…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confetti Canvas -->
+  <canvas id="confetti-canvas" class="confetti-canvas"></canvas>
+
+  <!-- Toast -->
   <div id="toast" class="toast hidden"></div>
+
   <script src="app.js"></script>
 </body>
 </html>

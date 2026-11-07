@@ -103,6 +103,9 @@ class Reward(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     cost_spasibki: Mapped[int] = mapped_column(Integer, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1", nullable=False)
+    max_per_student: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
+    stock: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    group_chat_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     __table_args__ = (
         CheckConstraint("cost_spasibki > 0", name="chk_rewards_cost_spasibki"),
@@ -134,6 +137,7 @@ class ClassSettings(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     group_chat_id: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    title: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     strict_mode: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
     strict_subjects: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     last_digest_on: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)

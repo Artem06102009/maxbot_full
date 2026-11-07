@@ -221,6 +221,14 @@ class MaxBotClient:
     async def get_me(self) -> dict[str, Any]:
         return await self._send_request(method="GET", path="/me")
 
+    async def get_chat(self, chat_id: Union[int, str]) -> dict[str, Any]:
+        c_str = str(chat_id).strip()
+        return await self._send_request(method="GET", path=f"/chats/{c_str}")
+
+    async def get_chat_admins(self, chat_id: Union[int, str]) -> dict[str, Any]:
+        c_str = str(chat_id).strip()
+        return await self._send_request(method="GET", path=f"/chats/{c_str}/members/admins")
+
     async def send_message(
         self,
         chat_id: Optional[Union[int, str]] = None,

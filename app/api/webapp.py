@@ -9,6 +9,7 @@ from app.database.models import (
     Achievement,
     Answer,
     AuditLog,
+    ClassSettings,
     Question,
     Reward,
     RewardClaim,
@@ -37,7 +38,7 @@ from app.services.class_tools import (
     weekly_rows,
     weekly_summary,
 )
-from app.services.gigachat import make_hint
+from app.services.gigachat import make_hint, chat_with_gigachat
 from app.config import get_settings
 from app.database.session import get_db_session
 from app.services.auth import get_current_user, require_teacher
@@ -94,17 +95,20 @@ class RewardItem(BaseModel):
     is_active: bool
 
 class ClaimRewardRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     reward_id: int
-    student_max_id: Optional[str] = None
-    user_id: Optional[str] = None
+    student_max_id: Optional[Union[str, int]] = None
+    user_id: Optional[Union[str, int]] = None
 
 class ClaimRewardResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, extra="ignore")
     id: int
     reward_id: int
     student_max_id: str
     status: str
     created_at: datetime
+    success: Optional[bool] = True
+    message: Optional[str] = "Запрос отправлен учителю"
 
 class AdjustBalanceRequest(BaseModel):
     user_id: Optional[str] = None
@@ -134,6 +138,9 @@ class CreateRewardRequest(BaseModel):
     price_coins: Optional[int] = None
     teacher_id: Optional[int] = None
     icon: Optional[str] = None
+    max_per_student: Optional[int] = 1
+    stock: Optional[int] = None
+    group_chat_id: Optional[str] = None
 
 class AwardBadgeRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -301,14 +308,43 @@ async def get_leaderboard(
         })
     return out
 
-@router.get("/rewards")
-async def get_rewards(
+@router.get("/user/classes")
+async def get_user_classes(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
 ):
-    res = await session.execute(
-        select(Reward).where(Reward.is_active == True).order_by(Reward.cost_spasibki.asc())
-    )
+    classes = (await session.execute(select(ClassSettings).order_by(ClassSettings.id.asc()))).scalars().all()
+    if not classes:
+        default_cls = ClassSettings(group_chat_id="1", title="11 «А» класс")
+        session.add(default_cls)
+        await session.commit()
+        classes = [default_cls]
+
+    teachers = {u.max_user_id: u.display_name for u in (await session.execute(select(User).where(User.role == "teacher"))).scalars().all()}
+    out = []
+    for c in classes:
+        t_name = teachers.get(c.teacher_max_id) if c.teacher_max_id else "Учитель"
+        title = c.title or (f"Класс {c.group_chat_id}" if c.group_chat_id != "1" else "11 «А» класс")
+        out.append({
+            "id": c.group_chat_id,
+            "title": title,
+            "teacher_name": t_name,
+            "strict_mode": c.strict_mode,
+            "exam_mode": is_exam_active(c),
+        })
+    return out
+
+
+@router.get("/rewards")
+async def get_rewards(
+    class_id: Optional[str] = Query(None),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    query = select(Reward).where(Reward.is_active == True)
+    if class_id:
+        query = query.where(or_(Reward.group_chat_id == class_id, Reward.group_chat_id.is_(None)))
+    res = await session.execute(query.order_by(Reward.cost_spasibki.asc()))
     rewards = res.scalars().all()
     claims_res = await session.execute(
         select(RewardClaim, Reward)
@@ -316,25 +352,36 @@ async def get_rewards(
         .where(RewardClaim.student_max_id == current_user.max_user_id)
         .order_by(RewardClaim.created_at.desc())
     )
+    claims_all = claims_res.all()
     status_map = {"requested": "pending", "approved": "approved", "rejected": "rejected"}
-    class_row = await primary_class_settings(session)
+    class_row = await get_class_settings(session, class_id) if class_id else await primary_class_settings(session)
     locked = exam_blocks_shop(class_row)
+
+    rewards_out = []
+    for r in rewards:
+        user_claims_count = sum(1 for c, _ in claims_all if c.reward_id == r.id and c.status in ("requested", "approved"))
+        max_limit = getattr(r, "max_per_student", 1) or 1
+        stock = getattr(r, "stock", None)
+        limit_reached = user_claims_count >= max_limit or (stock is not None and stock <= 0)
+        rewards_out.append({
+            "id": r.id,
+            "title": r.title,
+            "description": r.description,
+            "price_coins": r.cost_spasibki,
+            "cost_spasibki": r.cost_spasibki,
+            "icon": "🎁",
+            "is_active": r.is_active,
+            "max_per_student": max_limit,
+            "stock": stock,
+            "user_claims_count": user_claims_count,
+            "is_limit_reached": limit_reached,
+        })
+
     return {
         "user_coins": current_user.balance_spasibki,
         "shop_locked": locked,
         "shop_message": exam_label(class_row) if locked else "",
-        "rewards": [
-            {
-                "id": r.id,
-                "title": r.title,
-                "description": r.description,
-                "price_coins": r.cost_spasibki,
-                "cost_spasibki": r.cost_spasibki,
-                "icon": "🎁",
-                "is_active": r.is_active,
-            }
-            for r in rewards
-        ],
+        "rewards": rewards_out,
         "my_requests": [
             {
                 "id": claim.id,
@@ -343,7 +390,7 @@ async def get_rewards(
                 "reward_icon": "🎁",
                 "created_at": claim.created_at.strftime("%d.%m %H:%M") if claim.created_at else "",
             }
-            for claim, reward in claims_res.all()
+            for claim, reward in claims_all
         ],
     }
 
@@ -852,9 +899,72 @@ async def list_questions(
     return [await _format_question(session, q) for q in items]
 
 
+class CreateQuestionRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    user_id: Optional[Union[str, int]] = None
+    text: str
+    subject: Optional[str] = "Учёба"
+    image_url: Optional[str] = None
+
+
 @router.post("/questions")
-async def ask_blocked():
-    return {"success": False, "error": "Вопросы задают в чате класса в MAX командой /ask"}
+async def create_question_webapp(
+    body: CreateQuestionRequest,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Текст вопроса не может быть пустым")
+
+    author_uid = str(body.user_id or current_user.max_user_id)
+    class_row = await primary_class_settings(session)
+    group_cid = class_row.group_chat_id or "1"
+
+    question = Question(
+        group_chat_id=group_cid,
+        group_message_id=f"web-{author_uid}-{int(datetime.now(timezone.utc).timestamp())}",
+        author_max_id=author_uid,
+        text=text,
+        subject=body.subject or "Учёба",
+        image_url=body.image_url,
+        status="open",
+    )
+    session.add(question)
+    await session.commit()
+
+    # Post to class chat if bot token is active and chat_id is valid
+    try:
+        from app.services.max_client import get_bot_client
+        client = get_bot_client()
+        if client.token and group_cid not in ("0", "1", ""):
+            cid = int(group_cid) if str(group_cid).lstrip("-").isdigit() else None
+            if cid:
+                resp = await client.send_message(
+                    chat_id=cid,
+                    text=(
+                        f"❓ Вопрос от {current_user.display_name} · {question.subject}:\n"
+                        f"{text}\n\n"
+                        "💬 Ответьте реплаем на это сообщение, чтобы помочь однокласснику!"
+                    ),
+                )
+                bot_msg = resp.get("message", {})
+                bot_mid = (
+                    bot_msg.get("body", {}).get("mid")
+                    if isinstance(bot_msg.get("body"), dict)
+                    else None
+                ) or bot_msg.get("id") or bot_msg.get("mid")
+                if bot_mid:
+                    question.group_message_id = str(bot_mid)
+                    await session.commit()
+    except Exception:
+        pass
+
+    return {
+        "success": True,
+        "message": "Вопрос успешно опубликован в классе!",
+        "question_id": question.id,
+    }
 
 
 @router.post("/questions/help")
@@ -879,6 +989,25 @@ async def mark_helped(data: QuestionActionRequest, session: AsyncSession = Depen
             status="pending",
         ))
         await session.commit()
+
+        # Send DM notification to author in MAX
+        try:
+            from app.services.max_client import get_bot_client
+            client = get_bot_client()
+            if client.token and q.author_max_id:
+                author_uid = int(q.author_max_id) if str(q.author_max_id).isdigit() else None
+                helper_user = (await session.execute(select(User).where(User.max_user_id == helper_id))).scalar_one_or_none()
+                h_name = helper_user.display_name if helper_user else "Одноклассник"
+                if author_uid:
+                    await client.send_message(
+                        user_id=author_uid,
+                        text=(
+                            f"🤝 {h_name} отметил, что помог с вашим вопросом «{q.text[:60]}…»!\n\n"
+                            "Откройте Лигу Помощников, чтобы подтвердить ответ и начислить спасибки 🪙."
+                        ),
+                    )
+        except Exception:
+            pass
     return {"success": True, "message": "Вы отметились помощником. Автор может сказать спасибо."}
 
 
@@ -901,6 +1030,52 @@ async def say_thanks(data: QuestionActionRequest, session: AsyncSession = Depend
     if quality == "error":
         return {"success": True, "message": f"Отметили ошибку. Помощник получил +{xp} XP, вопрос ещё открыт", "unlocked": []}
     return {"success": True, "message": f"Спасибо! Помощник получил +{xp} XP", "unlocked": []}
+
+
+class GigaChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class GigaChatRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    user_id: Optional[Union[str, int]] = None
+    message: str
+    history: Optional[List[GigaChatMessage]] = None
+    class_id: Optional[str] = None
+
+
+@router.post("/gigachat/chat")
+async def gigachat_chat(
+    body: GigaChatRequest,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    text = (body.message or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Сообщение не может быть пустым")
+
+    target_class_id = str(body.class_id or "1")
+    settings_row = await get_class_settings(session, target_class_id)
+    if is_exam_active(settings_row):
+        return {
+            "status": "blocked",
+            "reply": "Внимание: в данном классе включён режим контрольной работы. ГигаЧат временно недоступен.",
+            "role": "assistant",
+        }
+
+    history_dicts = []
+    if body.history:
+        for m in body.history:
+            history_dicts.append({"role": m.role, "content": m.content})
+    history_dicts.append({"role": "user", "content": text})
+
+    reply = await chat_with_gigachat(history_dicts, student_name=current_user.display_name)
+    return {
+        "status": "ok",
+        "reply": reply,
+        "role": "assistant",
+    }
 
 
 @router.post("/questions/hint")
@@ -950,8 +1125,11 @@ async def teacher_reward_create_alias(body: CreateRewardRequest, current_teacher
         title=body.title,
         description=body.description,
         cost_spasibki=body.cost_spasibki or body.price_coins or 10,
+        max_per_student=body.max_per_student or 1,
+        stock=body.stock,
+        group_chat_id=body.group_chat_id,
     )
-    return {"success": True, "message": "Награда добавлена", "id": reward.id}
+    return {"success": True, "message": "Награда добавлена в лавку", "id": reward.id}
 
 
 @router.post("/teacher/award_badge")

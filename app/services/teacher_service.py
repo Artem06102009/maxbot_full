@@ -51,7 +51,25 @@ class TeacherService:
             raise ValueError("Reward is inactive")
 
         if student.balance_spasibki < reward.cost_spasibki:
-            raise ValueError("Insufficient balance")
+            raise ValueError("Недостаточно спасибок для покупки")
+
+        # Check limit per student
+        max_limit = getattr(reward, "max_per_student", 1) or 1
+        claims_count = (await session.execute(
+            select(func.count(RewardClaim.id)).where(
+                RewardClaim.reward_id == reward.id,
+                RewardClaim.student_max_id == student_max_id,
+                RewardClaim.status.in_(("requested", "approved")),
+            )
+        )).scalar_one() or 0
+        if claims_count >= max_limit:
+            raise ValueError(f"Лимит на эту награду исчерпан (максимум {max_limit} шт. на ученика)")
+
+        # Check stock
+        if getattr(reward, "stock", None) is not None:
+            if reward.stock <= 0:
+                raise ValueError("Награда закончилась в лавке")
+            reward.stock -= 1
 
         student.balance_spasibki -= reward.cost_spasibki
 
@@ -114,6 +132,8 @@ class TeacherService:
                 student = stu_res.scalar_one_or_none()
                 if student is not None:
                     student.balance_spasibki += reward.cost_spasibki
+                if getattr(reward, "stock", None) is not None:
+                    reward.stock += 1
 
         audit = AuditLog(
             actor_max_id=teacher_max_id,
@@ -204,6 +224,9 @@ class TeacherService:
         title: str,
         description: str,
         cost_spasibki: int,
+        max_per_student: int = 1,
+        stock: Optional[int] = None,
+        group_chat_id: Optional[str] = None,
     ) -> Reward:
         await cls._require_teacher(session, teacher_max_id)
 
@@ -212,6 +235,9 @@ class TeacherService:
             title=title,
             description=description,
             cost_spasibki=cost_spasibki,
+            max_per_student=max_per_student if max_per_student > 0 else 1,
+            stock=stock,
+            group_chat_id=group_chat_id,
             is_active=True,
         )
         session.add(reward)

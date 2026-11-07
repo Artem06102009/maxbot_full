@@ -54,6 +54,78 @@ def to_int_id(val: Any) -> Optional[int]:
 class BotService:
     def __init__(self, client: Optional[MaxBotClient] = None) -> None:
         self.client = client or get_bot_client()
+        self._seen_updates: set[str] = set()
+        self._seen_messages: set[str] = set()
+        self._last_start_ts: dict[str, float] = {}
+        self._in_flight_answers: set[int] = set()
+
+    def _mark_seen(self, collection: set[str], item_id: Any, max_size: int = 3000) -> bool:
+        if not item_id:
+            return False
+        key = str(item_id)
+        if key in collection:
+            return True
+        if len(collection) >= max_size:
+            to_remove = len(collection) - (max_size // 2)
+            for _ in range(to_remove):
+                collection.pop()
+        collection.add(key)
+        return False
+
+    async def _auto_assign_chat_teacher(
+        self,
+        session: AsyncSession,
+        group_cid: str,
+        client: MaxBotClient,
+        triggering_user_id: Optional[str] = None,
+        triggering_user_name: Optional[str] = None,
+    ) -> Optional[User]:
+        row = await get_class_settings(session, str(group_cid))
+        if row.teacher_max_id:
+            stmt = select(User).where(User.max_user_id == row.teacher_max_id)
+            teacher = (await session.execute(stmt)).scalar_one_or_none()
+            if teacher:
+                return teacher
+
+        creator_id = None
+        try:
+            chat_info = await client.get_chat(group_cid)
+            if isinstance(chat_info, dict):
+                creator_id = (
+                    chat_info.get("owner_id")
+                    or chat_info.get("creator_id")
+                    or (chat_info.get("owner", {}) if isinstance(chat_info.get("owner"), dict) else {}).get("user_id")
+                    or (chat_info.get("creator", {}) if isinstance(chat_info.get("creator"), dict) else {}).get("user_id")
+                )
+        except Exception:
+            pass
+
+        if not creator_id:
+            try:
+                admins_info = await client.get_chat_admins(group_cid)
+                if isinstance(admins_info, dict):
+                    admins_list = admins_info.get("admins") or admins_info.get("members") or []
+                    for adm in admins_list:
+                        if isinstance(adm, dict) and adm.get("role") in ("creator", "owner"):
+                            creator_id = adm.get("user_id") or adm.get("id")
+                            break
+                    if not creator_id and admins_list and isinstance(admins_list[0], dict):
+                        creator_id = admins_list[0].get("user_id") or admins_list[0].get("id")
+            except Exception:
+                pass
+
+        if not creator_id and triggering_user_id:
+            creator_id = triggering_user_id
+
+        if creator_id:
+            name = triggering_user_name if str(creator_id) == str(triggering_user_id) else None
+            teacher = await self.ensure_user(session, str(creator_id), display_name=name, role="teacher")
+            teacher.role = "teacher"
+            row.teacher_max_id = teacher.max_user_id
+            await session.commit()
+            return teacher
+
+        return None
 
     async def ensure_user(
         self,
@@ -174,28 +246,18 @@ class BotService:
         await session.flush()
 
         class_row = await get_class_settings(session, group_cid)
-        exam_note = exam_label(class_row)
-        hint_blocked = is_ai_blocked(class_row, subject)
-        kb = None
-        if not hint_blocked:
-            kb = format_inline_keyboard([[
-                build_callback_button("Подсказка ГигаЧат", payload=f"gigahint:{question.id}")
-            ]])
-        extra = f"\n\n📝 {exam_note}" if exam_note else ""
-        hint_line = (
-            "Сейчас без ГигаЧат — спрашивайте одноклассников реплаем."
-            if hint_blocked
-            else "Ответьте реплаем на это сообщение. Кнопка — только короткий намёк ИИ, не решение."
-        )
+        if not class_row.teacher_max_id and is_group:
+            await self._auto_assign_chat_teacher(session, group_cid, client, triggering_user_id=raw_sender_id, triggering_user_name=sender_name)
+
         announcement = (
             f"❓ Вопрос от {sender_name} · {subject}:\n"
             f"{question_text}\n\n"
-            f"{hint_line}{extra}"
+            "💬 Ответьте реплаем на это сообщение, чтобы помочь однокласснику!"
         )
         if is_group:
-            resp = await client.send_message(chat_id=target_chat_id, text=announcement, attachments=kb)
+            resp = await client.send_message(chat_id=target_chat_id, text=announcement)
         else:
-            resp = await client.send_message(user_id=target_uid, text=announcement, attachments=kb)
+            resp = await client.send_message(user_id=target_uid, text=announcement)
 
         bot_msg = resp.get("message", {})
         bot_mid = (
@@ -313,22 +375,21 @@ class BotService:
         target_chat = to_int_id(raw_chat_id) or raw_chat_id
         is_group = target_chat and target_chat != 0 and chat_type != "dialog" and target_chat != target_uid
 
-        if user.role not in ("teacher", "admin"):
-            err_text = "⛔ Панель управления доступна только учителям."
-            if is_group:
-                await client.send_message(chat_id=target_chat, text=err_text)
-            else:
-                await client.send_message(user_id=target_uid, text=err_text)
-            return
+        if is_group:
+            teacher = await self._auto_assign_chat_teacher(
+                session, str(target_chat), client, triggering_user_id=raw_sender_id, triggering_user_name=sender_name
+            )
+            is_teacher = user.role in ("teacher", "admin") or (teacher and teacher.max_user_id == user.max_user_id)
+            if not is_teacher:
+                t_name = teacher.display_name if teacher else "учителю"
+                await client.send_message(user_id=target_uid, text=f"⛔ Панель управления доступна только учителю класса ({t_name}).")
+                return
 
         base_url = settings.WEBAPP_BASE_URL.rstrip("/")
         webapp_url = f"{base_url}/?user_id={user.max_user_id}"
         keyboard = KeyboardBuilder.teacher_menu_keyboard(webapp_url)
-        menu_text = "👨‍🏫 Панель учителя Лиги Помощников:\nИспользуйте веб-кабинет для модерации наград и рейтинга:"
-        if is_group:
-            await client.send_message(chat_id=target_chat, text=menu_text, attachments=keyboard)
-        else:
-            await client.send_message(user_id=target_uid, text=menu_text, attachments=keyboard)
+        menu_text = "👨‍🏫 Панель учителя Лиги Помощников:\nИспользуйте веб-кабинет для модерации наград, настройки класса и рейтинга:"
+        await client.send_message(user_id=target_uid, text=menu_text, attachments=keyboard)
 
     async def handle_me_command(self, session: AsyncSession, message: dict[str, Any], client: MaxBotClient) -> None:
         sender = message.get("sender", {})
@@ -362,7 +423,7 @@ class BotService:
             await client.send_message(user_id=target_uid, text="Строгий режим включают в чате класса.")
             return
         if user.role not in ("teacher", "admin"):
-            await client.send_message(chat_id=target_chat, text="Только учитель может включать строгий режим.")
+            await client.send_message(user_id=target_uid, text="⛔ Только учитель может включать строгий режим.")
             return
         raw_text = (
             message.get("body", {}).get("text")
@@ -390,7 +451,7 @@ class BotService:
                 if resolved and resolved not in subjects:
                     subjects.append(resolved)
             if not subjects:
-                await client.send_message(chat_id=target_chat, text="Использование: `/strict физика` · `/strict on` · `/strict off`")
+                await client.send_message(user_id=target_uid, text="Использование: `/strict физика` · `/strict on` · `/strict off`")
                 return
             all_on, encoded = encode_strict_subjects(subjects)
             settings_row.strict_mode = all_on
@@ -419,7 +480,7 @@ class BotService:
             return
         row = await get_class_settings(session, str(target_chat))
         if user.role not in ("teacher", "admin") and row.teacher_max_id != user.max_user_id:
-            await client.send_message(chat_id=target_chat, text="Только учитель включает контрольную. Сначала `/setup` в этом чате.")
+            await client.send_message(user_id=target_uid, text="⛔ Только учитель включает контрольную.")
             return
         raw_text = (
             message.get("body", {}).get("text")
@@ -454,7 +515,7 @@ class BotService:
                 if resolved and resolved not in subjects:
                     subjects.append(resolved)
             if not subjects:
-                await client.send_message(chat_id=target_chat, text="Использование: `/exam физика` · `/exam on` · `/exam off` · `/exam физика 2`")
+                await client.send_message(user_id=target_uid, text="Использование: `/exam физика` · `/exam on` · `/exam off` · `/exam физика 2`")
                 return
             set_exam_mode(row, subjects, days=days)
             label = exam_label(row)
@@ -463,41 +524,53 @@ class BotService:
 
     async def handle_setup_command(self, session: AsyncSession, message: dict[str, Any], client: MaxBotClient) -> None:
         user, target_chat, target_uid, is_group = await self._require_class_teacher(session, message, client)
-        if not is_group:
-            await client.send_message(user_id=target_uid, text="Напишите `/setup` в чате класса — настроим предметы, ИИ, воскресенье и ссылку родителям.")
-            return
-        row = await get_class_settings(session, str(target_chat))
-        if user.role not in ("teacher", "admin"):
-            if row.teacher_max_id and row.teacher_max_id != user.max_user_id:
-                await client.send_message(chat_id=target_chat, text="Этот класс уже настроил другой учитель.")
+        if is_group:
+            teacher = await self._auto_assign_chat_teacher(
+                session, str(target_chat), client, triggering_user_id=user.max_user_id, triggering_user_name=user.display_name
+            )
+            row = await get_class_settings(session, str(target_chat))
+            is_teacher = user.role in ("teacher", "admin") or (teacher and teacher.max_user_id == user.max_user_id)
+            if not is_teacher:
+                t_name = teacher.display_name if teacher else "учителю"
+                await client.send_message(user_id=target_uid, text=f"⚙️ Настройки Лиги доступны только учителю класса ({t_name}).")
                 return
-            user.role = "teacher"
-            row.teacher_max_id = user.max_user_id
-        elif not row.teacher_max_id:
-            row.teacher_max_id = user.max_user_id
-        await session.commit()
+
+            text = self._setup_summary(row, user)
+            await client.send_message(user_id=target_uid, text=text, attachments=build_setup_home_keyboard())
+            return
+
+        # Called in PM (в ЛС)
+        stmt = select(ClassSettings).where(ClassSettings.teacher_max_id == user.max_user_id)
+        class_res = await session.execute(stmt)
+        row = class_res.scalars().first()
+        if not row:
+            row = await primary_class_settings(session)
+            if not row.teacher_max_id:
+                row.teacher_max_id = user.max_user_id
+                user.role = "teacher"
+                await session.commit()
+
         text = self._setup_summary(row, user)
-        await client.send_message(chat_id=target_chat, text=text, attachments=build_setup_home_keyboard())
+        await client.send_message(user_id=target_uid, text=text, attachments=build_setup_home_keyboard())
 
     def _setup_summary(self, row, user) -> str:
         strict = decode_strict_subjects(row)
         if "*" in strict or row.strict_mode:
-            ai = "ГигаЧат выключен везде"
+            ai = "выключен везде"
         elif strict:
-            ai = "без ИИ: " + ", ".join(strict)
+            ai = "выключен для: " + ", ".join(strict)
         else:
-            ai = "ГигаЧат можно по всем темам"
+            ai = "стандартный"
         digest = "воскресенье 18:00 включено" if getattr(row, "digest_enabled", True) is not False else "дайджест выключен"
         exam = exam_label(row) or "контрольной нет"
         return (
-            f"⚙️ Настройка Лиги для класса\nУчитель: {user.display_name}\n\n"
+            f"⚙️ Настройки Лиги Помощников для класса\nУчитель: {user.display_name}\n\n"
             f"1. Предметы: {', '.join(CLASS_SUBJECTS)}\n"
-            f"   Ученик пишет `/ask физика …` — бот сам кладёт тему на полку.\n"
-            f"2. Строгий ИИ: {ai}\n"
+            f"2. Строгий режим: {ai}\n"
             f"3. Дайджест: {digest}\n"
-            f"4. Родителям: ребёнок пишет боту `/me` — ссылка на неделю, не переписка.\n"
-            f"5. {exam}\n\n"
-            "Жмите кнопки по шагам."
+            f"4. Родителям: ребёнок пишет боту `/me` в ЛС — ссылка на неделю.\n"
+            f"5. Режим контрольной: {exam}\n\n"
+            "Выберите раздел для настройки (все настройки меняются здесь, в ЛС):"
         )
 
     async def handle_setup_callback(self, session, client, callback, user) -> None:
@@ -507,15 +580,20 @@ class BotService:
         raw_chat_id = msg.get("chat_id") or (msg.get("recipient") or {}).get("chat_id") or callback.get("chat_id")
         target_chat = to_int_id(raw_chat_id) or raw_chat_id
         target_uid = to_int_id(user.max_user_id)
-        if not target_chat or target_chat in (0, target_uid):
-            await client.answer_callback(callback_id=callback_id, notification="Настройка только в чате класса")
-            return
-        row = await get_class_settings(session, str(target_chat))
-        if user.role not in ("teacher", "admin") and row.teacher_max_id not in (None, user.max_user_id):
-            await client.answer_callback(callback_id=callback_id, notification="Только учитель класса")
-            return
+
+        # Support configuration in PM or group
+        if target_chat and target_chat != target_uid and target_chat != 0:
+            row = await get_class_settings(session, str(target_chat))
+        else:
+            stmt = select(ClassSettings).where(ClassSettings.teacher_max_id == user.max_user_id)
+            row = (await session.execute(stmt)).scalars().first()
+            if not row:
+                row = await primary_class_settings(session)
+
         if user.role not in ("teacher", "admin"):
             user.role = "teacher"
+            if not row.teacher_max_id:
+                row.teacher_max_id = user.max_user_id
             row.teacher_max_id = user.max_user_id
 
         action = payload.split(":", 1)[1] if ":" in payload else ""
@@ -614,31 +692,11 @@ class BotService:
         await session.commit()
         await client.answer_callback(callback_id=callback_id, notification=note)
         if extra:
-            await client.send_message(chat_id=target_chat, text=extra, attachments=kb)
+            await client.send_message(user_id=target_uid, text=extra, attachments=kb)
 
     async def _send_gigahint(self, session, client, callback, user, q_id: int) -> None:
         callback_id = str(callback.get("callback_id", ""))
-        q = (await session.execute(select(Question).where(Question.id == q_id))).scalar_one_or_none()
-        if not q:
-            await client.answer_callback(callback_id=callback_id, notification="Вопрос не найден")
-            return
-        settings_row = await get_class_settings(session, q.group_chat_id)
-        if is_ai_blocked(settings_row, q.subject):
-            await client.answer_callback(callback_id=callback_id, notification="ИИ выключен учителем по этой теме")
-            return
-        settings = get_settings()
-        allowed, left = consume_hint_quota(user, settings.HINT_DAILY_LIMIT)
-        await session.commit()
-        if not allowed:
-            await client.answer_callback(callback_id=callback_id, notification="Лимит подсказок на сегодня исчерпан")
-            return
-        await client.answer_callback(callback_id=callback_id, notification="Готовлю подсказку…")
-        hint = await make_hint(q.text)
-        chat_id = to_int_id(q.group_chat_id)
-        await client.send_message(
-            chat_id=chat_id,
-            text=f"🤖 Подсказка ГигаЧат (не готовый ответ). Осталось сегодня: {left}\n\n{hint}",
-        )
+        await client.answer_callback(callback_id=callback_id, notification="Подсказки ИИ отключены в чате класса")
 
     async def handle_message_callback(
         self,
@@ -672,9 +730,7 @@ class BotService:
                 decision = "no"
 
         if payload.startswith("gigahint:"):
-            q_id = payload.split(":")[1]
-            if q_id.isdigit():
-                await self._send_gigahint(session, client, callback, user, int(q_id))
+            await client.answer_callback(callback_id=callback_id, notification="Подсказки ИИ отключены в чате класса")
             return
 
         if payload.startswith("setup:"):
@@ -684,74 +740,76 @@ class BotService:
         if answer_id is None or decision not in ("yes", "no", "clear", "short", "error"):
             return
 
-        ans_stmt = select(Answer).where(Answer.id == answer_id)
-        ans_res = await session.execute(ans_stmt)
-        answer = ans_res.scalar_one_or_none()
-        if answer is None:
-            await client.answer_callback(callback_id=callback_id, notification="Ответ не найден")
+        if answer_id in self._in_flight_answers:
+            await client.answer_callback(callback_id=callback_id, notification="Обрабатывается…")
             return
 
-        if answer.status != "pending":
-            await client.answer_callback(callback_id=callback_id, notification="Ответ уже обработан")
-            return
+        self._in_flight_answers.add(answer_id)
+        try:
+            ans_stmt = select(Answer).where(Answer.id == answer_id)
+            ans_res = await session.execute(ans_stmt)
+            answer = ans_res.scalar_one_or_none()
+            if answer is None:
+                await client.answer_callback(callback_id=callback_id, notification="Ответ не найден")
+                return
 
-        q_stmt = select(Question).where(Question.id == answer.question_id)
-        q_res = await session.execute(q_stmt)
-        question = q_res.scalar_one_or_none()
-        if question is None:
-            await client.answer_callback(callback_id=callback_id, notification="Вопрос не найден")
-            return
+            if answer.status != "pending":
+                await client.answer_callback(callback_id=callback_id, notification="Ответ уже обработан")
+                return
 
-        is_author = (
-            str(question.author_max_id).strip().lower() == user.max_user_id.strip().lower()
-            or str(question.author_max_id).strip().lower() == raw_user_id.strip().lower()
-            or to_int_id(question.author_max_id) == to_int_id(raw_user_id)
-        )
-        if not is_author:
-            await client.answer_callback(
-                callback_id=callback_id,
-                notification="Только автор вопроса может подтвердить ответ!",
-            )
-            return
+            q_stmt = select(Question).where(Question.id == answer.question_id)
+            q_res = await session.execute(q_stmt)
+            question = q_res.scalar_one_or_none()
+            if question is None:
+                await client.answer_callback(callback_id=callback_id, notification="Вопрос не найден")
+                return
 
-        helper_uid = to_int_id(answer.author_max_id)
-        group_cid = to_int_id(question.group_chat_id) or question.group_chat_id
-
-        quality = {"yes": "clear", "no": "error"}.get(decision, decision)
-        spasibki, xp = await GamificationService.award_gratitude(
-            session, question, answer, quality=quality
-        )
-        q_label = QUALITY_LABELS.get(quality, quality)
-        if quality == "error":
-            await client.answer_callback(
-                callback_id=callback_id,
-                notification="Отметили ошибку",
-                message={"text": "Вопрос остаётся открытым. Можно ждать другой разбор."},
+            is_author = (
+                str(question.author_max_id).strip().lower() == user.max_user_id.strip().lower()
+                or str(question.author_max_id).strip().lower() == raw_user_id.strip().lower()
+                or to_int_id(question.author_max_id) == to_int_id(raw_user_id)
             )
-            await client.send_message(
-                user_id=helper_uid,
-                text=f"Автор отметил ответ как «с ошибкой». +{xp} XP за попытку, вопрос ещё открыт.",
-            )
-        else:
-            await client.answer_callback(
-                callback_id=callback_id,
-                notification="Благодарность отправлена!",
-                message={"text": f"✅ Вопрос закрыт. Оценка: {q_label}."},
-            )
-            helper_stmt = select(User).where(User.max_user_id == answer.author_max_id)
-            helper_user = (await session.execute(helper_stmt)).scalar_one_or_none()
-            streak = helper_user.help_streak if helper_user else 0
-            streak_line = f" Серия: {streak} дн. 🔥" if streak else ""
-            await client.send_message(
-                user_id=helper_uid,
-                text=f"Ответ «{q_label}». +{spasibki} спасибка, +{xp} XP.{streak_line}",
-            )
-            if group_cid and str(group_cid).strip() != "0" and to_int_id(group_cid) != helper_uid:
-                helper_name = helper_user.display_name if helper_user else "однокласснику"
-                await client.send_message(
-                    chat_id=group_cid,
-                    text=f"🎉 Вопрос решён ({q_label}). Спасибо {helper_name}!",
+            if not is_author:
+                await client.answer_callback(
+                    callback_id=callback_id,
+                    notification="Только автор вопроса может подтвердить ответ!",
                 )
+                return
+
+            helper_uid = to_int_id(answer.author_max_id)
+            group_cid = to_int_id(question.group_chat_id) or question.group_chat_id
+
+            quality = {"yes": "clear", "no": "error"}.get(decision, decision)
+            spasibki, xp = await GamificationService.award_gratitude(
+                session, question, answer, quality=quality
+            )
+            q_label = QUALITY_LABELS.get(quality, quality)
+            if quality == "error":
+                await client.answer_callback(
+                    callback_id=callback_id,
+                    notification="Отметили ошибку",
+                    message={"text": "Вопрос остаётся открытым. Можно ждать другой разбор."},
+                )
+                await client.send_message(
+                    user_id=helper_uid,
+                    text=f"Автор отметил ответ как «с ошибкой». +{xp} XP за попытку, вопрос ещё открыт.",
+                )
+            else:
+                await client.answer_callback(
+                    callback_id=callback_id,
+                    notification="Благодарность отправлена!",
+                    message={"text": f"✅ Вопрос закрыт. Оценка: {q_label}."},
+                )
+                helper_stmt = select(User).where(User.max_user_id == answer.author_max_id)
+                helper_user = (await session.execute(helper_stmt)).scalar_one_or_none()
+                streak = helper_user.help_streak if helper_user else 0
+                streak_line = f" Серия: {streak} дн. 🔥" if streak else ""
+                await client.send_message(
+                    user_id=helper_uid,
+                    text=f"Ответ «{q_label}». +{spasibki} спасибка, +{xp} XP.{streak_line}",
+                )
+        finally:
+            self._in_flight_answers.discard(answer_id)
 
     async def handle_bot_started(
         self,
@@ -762,18 +820,73 @@ class BotService:
         user_info = update.get("user", {})
         uid = str(user_info.get("user_id", ""))
         name = user_info.get("name") or user_info.get("username") or f"Ученик {uid}"
-        await self.ensure_user(session, uid, display_name=name)
+        user = await self.ensure_user(session, uid, display_name=name)
         chat_id = update.get("chat_id")
         user_target = to_int_id(uid)
         c_id = to_int_id(chat_id)
-        welcome_text = (
-            f"Привет, {name}! Добро пожаловать в Лигу Помощников 🎓\n\n"
-            "Задавай вопросы в чате класса через `/ask <вопрос>` или отвечай на вопросы друзей реплаем, чтобы копить спасибки и опыт!"
-        )
-        if c_id and c_id != 0 and c_id != user_target:
-            await client.send_message(chat_id=c_id, text=welcome_text)
+        is_group = c_id and c_id != 0 and c_id != user_target
+
+        now = datetime.now(timezone.utc).timestamp()
+        if now - self._last_start_ts.get(uid, 0.0) < 5.0:
+            return
+        self._last_start_ts[uid] = now
+
+        settings = get_settings()
+        webapp_url = f"{settings.WEBAPP_BASE_URL.rstrip('/')}/?user_id={uid}"
+        keyboard = format_inline_keyboard([
+            [build_link_button("Открыть Лигу Помощников", url=webapp_url)]
+        ])
+
+        if is_group:
+            teacher = await self._auto_assign_chat_teacher(
+                session, str(c_id), client, triggering_user_id=uid, triggering_user_name=name
+            )
+            t_name = teacher.display_name if teacher else "Создатель чата"
+            welcome_text = (
+                f"👋 Привет, класс! Я бот «Лига Помощников» 🎓\n\n"
+                "• Задавайте вопросы по учёбе: `/ask <вопрос>`\n"
+                "• Отвечайте реплаем на карточку вопроса, чтобы заработать опыт и спасибки 🪙\n"
+                f"• Учитель класса: {t_name}\n\n"
+                "Учитель может написать боту `/setup` или `/manage` для настройки лавки наград."
+            )
+            await client.send_message(chat_id=c_id, text=welcome_text, attachments=keyboard)
         else:
-            await client.send_message(user_id=user_target, text=welcome_text)
+            welcome_text = (
+                f"Привет, {name}! Добро пожаловать в Лигу Помощников 🎓\n\n"
+                "Добавьте меня в чат вашего класса в MAX!\n"
+                "• Задавайте вопросы через `/ask` и помогайте одноклассникам реплаем\n"
+                "• За помощь начисляются опыт, звания и спасибки 🪙\n"
+                "• В школьной лавке спасибки можно обменивать на награды от учителя!"
+            )
+            await client.send_message(user_id=user_target, text=welcome_text, attachments=keyboard)
+
+    async def handle_hint_command(
+        self, session: AsyncSession, message: dict[str, Any], client: MaxBotClient
+    ) -> None:
+        sender = message.get("sender", {})
+        raw_sender_id = str(sender.get("user_id", ""))
+        user = await self.ensure_user(session, raw_sender_id, display_name=sender.get("name"))
+        target_uid = to_int_id(raw_sender_id)
+
+        raw_text = (
+            message.get("body", {}).get("text")
+            if isinstance(message.get("body"), dict)
+            else None
+        ) or message.get("text") or ""
+        question_text = raw_text.replace("/hint", "", 1).strip()
+        if not question_text:
+            await client.send_message(
+                user_id=target_uid,
+                text="💡 Напишите `/hint <вопрос или задача>` в этом личном диалоге, и я дам наводящую подсказку!",
+            )
+            return
+
+        from app.services.gigachat import make_private_hint
+        hint = await make_private_hint(question_text)
+        await client.send_message(
+            user_id=target_uid,
+            text=f"🤖 Подсказка наставника (в ЛС):\n\n{hint}",
+        )
 
     async def handle_message_created(
         self,
@@ -787,6 +900,10 @@ class BotService:
             else None
         ) or message.get("text") or ""
         text = raw_text.strip()
+
+        if text.startswith("/hint"):
+            await self.handle_hint_command(session, message, client)
+            return
 
         if text.startswith("/ask"):
             await self.handle_ask_command(session, message, client)
@@ -819,23 +936,29 @@ class BotService:
             sender = message.get("sender", {})
             raw_sender_id = str(sender.get("user_id", ""))
             sender_name = sender.get("name") or sender.get("username") or f"Ученик {raw_sender_id}"
-            await self.ensure_user(session, raw_sender_id, display_name=sender_name)
+            user = await self.ensure_user(session, raw_sender_id, display_name=sender_name)
             target_chat = to_int_id(raw_chat_id) or raw_chat_id
             target_uid = to_int_id(raw_sender_id)
+
+            now = datetime.now(timezone.utc).timestamp()
+            if now - self._last_start_ts.get(raw_sender_id, 0.0) < 5.0:
+                # Avoid sending duplicate greeting if bot_started was just handled
+                return
+            self._last_start_ts[raw_sender_id] = now
+
             settings = get_settings()
             webapp_url = f"{settings.WEBAPP_BASE_URL.rstrip('/')}/?user_id={raw_sender_id}"
             keyboard = format_inline_keyboard([
                 [build_link_button("Открыть Лигу Помощников", url=webapp_url)]
             ])
-            settings_limit = get_settings().HINT_DAILY_LIMIT
             help_text = (
-                f"👋 Привет, {sender_name}! Бот «Лига Помощников» для чата класса.\n\n"
-                "1. `/ask физика Как найти силу трения?` — или фото с подписью `/ask`.\n"
-                "2. Одноклассник отвечает реплаем на карточку.\n"
-                "3. Автор оценивает ответ: понятно / коротко / с ошибкой.\n"
-                f"4. «Подсказка ГигаЧат» — намёк, не решение. Лимит {settings_limit}/день.\n\n"
-                "Учитель: `/setup` · `/exam физика` · `/strict` · `/manage`.\n"
-                "`/me` — ссылка родителю. 🌙 Тихий час 22:00–07:00: опыт утром."
+                f"👋 Привет, {sender_name}! Бот «Лига Помощников» для взаимопомощи в учёбе.\n\n"
+                "1. `/ask физика Как найти силу трения?` — задать вопрос классу (или фото с подписью `/ask`).\n"
+                "2. Одноклассник отвечает реплаем на сообщение вопроса.\n"
+                "3. Автор подтверждает помощь: понятно (+50 XP, +1 🪙), коротко (+25 XP) или с ошибкой.\n"
+                "4. Копите спасибки и обменивайте их на бонусы от учителя в лавке наград!\n\n"
+                "Учитель: `/setup` · `/exam` · `/strict` · `/manage`.\n"
+                "`/me` — сводка родителю за неделю. 🌙 Тихий час 22:00–07:00."
             )
             if target_chat and target_chat != 0 and chat_type != "dialog" and target_chat != target_uid:
                 await client.send_message(chat_id=target_chat, text=help_text, attachments=keyboard)
@@ -866,6 +989,16 @@ class BotService:
         client: Optional[MaxBotClient] = None,
     ) -> None:
         active_client = client or self.client
+        update_id = update.get("update_id")
+        if update_id and self._mark_seen(self._seen_updates, update_id):
+            return
+
+        msg = update.get("message")
+        if isinstance(msg, dict):
+            mid = msg.get("mid") or msg.get("id") or (msg.get("body") if isinstance(msg.get("body"), dict) else {}).get("mid")
+            if mid and self._mark_seen(self._seen_messages, mid):
+                return
+
         utype = update.get("update_type")
         if utype == "message_created":
             await self.handle_message_created(session, update.get("message", {}), active_client)
