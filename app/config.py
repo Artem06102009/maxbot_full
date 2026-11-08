@@ -11,7 +11,7 @@ class Settings(BaseModel):
         )
     )
     MAX_BOT_TOKEN: str = Field(
-        default_factory=lambda: os.getenv("MAX_BOT_TOKEN") or os.getenv("BOT_TOKEN", "")
+        default_factory=lambda: os.getenv("MAX_BOT_TOKEN", "")
     )
     MAX_API_BASE_URL: str = Field(
         default_factory=lambda: os.getenv(
@@ -22,19 +22,8 @@ class Settings(BaseModel):
         default_factory=lambda: os.getenv("MAX_SSL_VERIFY", "false").lower() in ("true", "1", "yes")
     )
     WEBAPP_BASE_URL: str = Field(
-        default_factory=lambda: os.getenv("WEBAPP_BASE_URL") or os.getenv("BASE_URL", "https://itcubefor.ru")
+        default_factory=lambda: os.getenv("WEBAPP_BASE_URL", "https://itcubefor.ru")
     )
-    GIGACHAT_CREDENTIALS: str = Field(default_factory=lambda: os.getenv("GIGACHAT_CREDENTIALS", ""))
-    GIGACHAT_SCOPE: str = Field(default_factory=lambda: os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS"))
-    GIGACHAT_MODEL: str = Field(default_factory=lambda: os.getenv("GIGACHAT_MODEL", "GigaChat-2-Pro"))
-    GIGACHAT_OAUTH_URL: str = Field(
-        default_factory=lambda: os.getenv("GIGACHAT_OAUTH_URL", "https://ngw.devices.sberbank.ru:9443/api/v2/oauth")
-    )
-    GIGACHAT_API_URL: str = Field(
-        default_factory=lambda: os.getenv("GIGACHAT_API_URL", "https://gigachat.devices.sberbank.ru/api/v1")
-    )
-    HINT_DAILY_LIMIT: int = Field(default_factory=lambda: int(os.getenv("HINT_DAILY_LIMIT", "3")))
-    UNANSWERED_MINUTES: int = Field(default_factory=lambda: int(os.getenv("UNANSWERED_MINUTES", "30")))
     CURFEW_START_HOUR: int = Field(
         default_factory=lambda: int(os.getenv("CURFEW_START_HOUR", "22"))
     )

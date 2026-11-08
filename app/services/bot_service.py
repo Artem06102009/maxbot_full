@@ -1,1042 +1,678 @@
-from datetime import datetime, timezone
-from typing import Any, Optional, Union
-from sqlalchemy import or_, select
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.database.session import async_session_factory
-from app.services.anti_cheat import AntiCheatService
-from app.services.gamification import GamificationService
+from typing import Optional
+from sqlmodel import select, delete, or_
+from maxapi import Bot, Dispatcher
+from maxapi.filters.command import Command, CommandStart
+from maxapi.types import MessageCreated, MessageCallback, BotStarted, BotAdded
+from maxapi.types import CallbackButton
+from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
+
 from app.config import get_settings
-from app.database.models import Answer, Question, User
-from app.services.class_tools import (
-    CLASS_SUBJECTS,
-    PHOTO_FALLBACK,
-    consume_hint_quota,
-    decode_strict_subjects,
-    encode_strict_subjects,
-    ensure_report_token,
-    exam_label,
-    find_hanging_duplicate,
-    get_class_settings,
-    is_ai_blocked,
-    is_exam_active,
-    parse_ask_text,
-    resolve_subject_name,
-    set_exam_mode,
-)
-from app.services.gamification import QUALITY_LABELS
-from app.services.gigachat import make_hint
-from app.services.max_client import (
-    KeyboardBuilder,
-    MaxBotClient,
-    build_callback_button,
-    build_link_button,
-    build_setup_home_keyboard,
-    format_inline_keyboard,
-    get_bot_client,
-)
+from app.database.session import async_session_factory
+from app.database.models import User, Chat, ChatMember, Question, Answer, Reward
+from app.services.gamification import GamificationService
 
-def to_int_id(val: Any) -> Optional[int]:
-    if val is None:
-        return None
-    s = str(val).strip()
-    if not s:
-        return None
-    if s.isdigit():
-        return int(s)
-    if s.startswith("-") and s[1:].isdigit():
-        return -int(s[1:])
-    digits = "".join(ch for ch in s if ch.isdigit())
-    if digits:
-        val_int = int(digits)
-        return -val_int if s.startswith("-") else val_int
-    return None
+settings = get_settings()
+dp = Dispatcher()
 
-class BotService:
-    def __init__(self, client: Optional[MaxBotClient] = None) -> None:
-        self.client = client or get_bot_client()
-        self._seen_updates: set[str] = set()
-        self._seen_messages: set[str] = set()
-        self._last_start_ts: dict[str, float] = {}
-        self._in_flight_answers: set[int] = set()
+def extract_display_name(user) -> str:
+    if not user:
+        return "Участник"
+    first = getattr(user, "first_name", "") or ""
+    last = getattr(user, "last_name", "") or ""
+    full = f"{first} {last}".strip()
+    if full:
+        return full
+    username = getattr(user, "username", "") or ""
+    if username:
+        return username
+    user_id = getattr(user, "user_id", "")
+    return f"Участник {user_id}"
 
-    def _mark_seen(self, collection: set[str], item_id: Any, max_size: int = 3000) -> bool:
-        if not item_id:
-            return False
-        key = str(item_id)
-        if key in collection:
-            return True
-        if len(collection) >= max_size:
-            to_remove = len(collection) - (max_size // 2)
-            for _ in range(to_remove):
-                collection.pop()
-        collection.add(key)
-        return False
+def build_main_menu_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.add(CallbackButton(text="❓ Как спросить?", payload="menu:ask_info"))
+    builder.add(CallbackButton(text="👤 Мой профиль", payload="menu:profile"))
+    builder.add(CallbackButton(text="🏆 Рейтинг", payload="menu:top"))
+    builder.add(CallbackButton(text="🎁 Лавка наград", payload="menu:shop"))
+    builder.add(CallbackButton(text="🎓 Кабинет учителя", payload="menu:teacher"))
+    builder.adjust(2, 2, 1)
+    return builder
 
-    async def _auto_assign_chat_teacher(
-        self,
-        session: AsyncSession,
-        group_cid: str,
-        client: MaxBotClient,
-        triggering_user_id: Optional[str] = None,
-        triggering_user_name: Optional[str] = None,
-    ) -> Optional[User]:
-        row = await get_class_settings(session, str(group_cid))
-        if row.teacher_max_id:
-            stmt = select(User).where(User.max_user_id == row.teacher_max_id)
-            teacher = (await session.execute(stmt)).scalar_one_or_none()
-            if teacher:
-                return teacher
-
-        creator_id = None
-        try:
-            chat_info = await client.get_chat(group_cid)
-            if isinstance(chat_info, dict):
-                creator_id = (
-                    chat_info.get("owner_id")
-                    or chat_info.get("creator_id")
-                    or (chat_info.get("owner", {}) if isinstance(chat_info.get("owner"), dict) else {}).get("user_id")
-                    or (chat_info.get("creator", {}) if isinstance(chat_info.get("creator"), dict) else {}).get("user_id")
-                )
-        except Exception:
-            pass
-
-        if not creator_id:
+async def send_response_or_dm(event: MessageCreated, text: str, kb=None, is_group: bool = False):
+    attachments = [kb.as_markup()] if kb else None
+    if is_group:
+        user_id = str(event.from_user.user_id) if event.from_user else ""
+        target_uid = int(user_id) if user_id.isdigit() else None
+        user_name = extract_display_name(event.from_user)
+        if target_uid:
             try:
-                admins_info = await client.get_chat_admins(group_cid)
-                if isinstance(admins_info, dict):
-                    admins_list = admins_info.get("admins") or admins_info.get("members") or []
-                    for adm in admins_list:
-                        if isinstance(adm, dict) and adm.get("role") in ("creator", "owner"):
-                            creator_id = adm.get("user_id") or adm.get("id")
-                            break
-                    if not creator_id and admins_list and isinstance(admins_list[0], dict):
-                        creator_id = admins_list[0].get("user_id") or admins_list[0].get("id")
+                await event.bot.send_message(user_id=target_uid, text=text, attachments=attachments)
+                await event.message.reply(text=f"{user_name}, я отправил вам информацию в личные сообщения.")
+                return
+            except Exception:
+                await event.message.reply(text=f"{user_name}, чтобы открыть меню, перейдите в личный диалог с ботом.")
+                return
+    await event.message.answer(text=text, attachments=attachments)
+
+def build_approval_keyboard(answer_id: int):
+    builder = InlineKeyboardBuilder()
+    builder.add(CallbackButton(text="✅ Помог (+50 XP)", payload=f"help_accept:{answer_id}"))
+    builder.add(CallbackButton(text="❌ Не помог", payload=f"help_reject:{answer_id}"))
+    builder.adjust(2)
+    return builder
+
+async def ensure_user_and_chat(
+    session,
+    user_id: str,
+    display_name: str,
+    chat_id: Optional[str] = None,
+    chat_title: Optional[str] = None,
+    owner_id: Optional[str] = None,
+    is_admin: bool = False,
+    is_group: bool = False,
+):
+    res_user = await session.execute(select(User).where(User.max_user_id == user_id))
+    user = res_user.scalar_one_or_none()
+
+    is_teacher = is_admin or bool(owner_id and str(owner_id) == str(user_id))
+
+    if not user:
+        user = User(
+            max_user_id=user_id,
+            display_name=display_name,
+            role="teacher" if is_teacher else "student",
+            balance_spasibki=10,
+            xp=100,
+            rank="Любитель",
+        )
+        session.add(user)
+    else:
+        if display_name and not display_name.startswith("Участник "):
+            user.display_name = display_name
+        if is_teacher and user.role != "teacher":
+            user.role = "teacher"
+
+    if is_group and chat_id and chat_title and chat_title.lower() != "диалог":
+        res_chat = await session.execute(select(Chat).where(Chat.max_chat_id == chat_id))
+        chat_row = res_chat.scalar_one_or_none()
+        if not chat_row:
+            chat_row = Chat(
+                max_chat_id=chat_id,
+                title=chat_title,
+                owner_id=owner_id,
+            )
+            session.add(chat_row)
+        else:
+            if chat_title:
+                chat_row.title = chat_title
+            if owner_id and not chat_row.owner_id:
+                chat_row.owner_id = owner_id
+
+        member_role = "teacher" if is_teacher else "student"
+        res_member = await session.execute(
+            select(ChatMember).where(ChatMember.chat_max_id == chat_id, ChatMember.user_max_id == user_id)
+        )
+        member_row = res_member.scalar_one_or_none()
+        if not member_row:
+            member_row = ChatMember(
+                chat_max_id=chat_id,
+                user_max_id=user_id,
+                role=member_role,
+            )
+            session.add(member_row)
+        else:
+            if is_teacher and member_row.role != "teacher":
+                member_row.role = "teacher"
+
+    await session.commit()
+    return user
+
+@dp.bot_added()
+async def on_bot_added(event: BotAdded):
+    chat_id = str(event.chat_id)
+    print(f"[БОТ] Бот добавлен в чат {chat_id}")
+
+    try:
+        chat_obj = await event.bot.get_chat_by_id(event.chat_id)
+        chat_title = chat_obj.title if chat_obj else f"Чат {chat_id}"
+        owner_id = str(chat_obj.owner_id) if chat_obj and chat_obj.owner_id else None
+
+        async with async_session_factory() as session:
+            res_chat = await session.execute(select(Chat).where(Chat.max_chat_id == chat_id))
+            chat_row = res_chat.scalar_one_or_none()
+            if not chat_row:
+                chat_row = Chat(max_chat_id=chat_id, title=chat_title, owner_id=owner_id)
+                session.add(chat_row)
+            else:
+                chat_row.title = chat_title
+                if owner_id:
+                    chat_row.owner_id = owner_id
+
+            if owner_id:
+                res_m = await session.execute(
+                    select(ChatMember).where(ChatMember.chat_max_id == chat_id, ChatMember.user_max_id == owner_id)
+                )
+                if not res_m.scalar_one_or_none():
+                    session.add(ChatMember(chat_max_id=chat_id, user_max_id=owner_id, role="teacher"))
+
+            try:
+                admin_res = await event.bot.get_list_admin_chat(event.chat_id)
+                if admin_res and hasattr(admin_res, "members") and admin_res.members:
+                    for adm in admin_res.members:
+                        adm_id = str(adm.user_id)
+                        adm_name = f"{adm.first_name or ''} {adm.last_name or ''}".strip() or adm.username or f"Учитель {adm_id}"
+                        u_res = await session.execute(select(User).where(User.max_user_id == adm_id))
+                        adm_u = u_res.scalar_one_or_none()
+                        if not adm_u:
+                            session.add(User(max_user_id=adm_id, display_name=adm_name, role="teacher", balance_spasibki=10, xp=100))
+                        else:
+                            adm_u.role = "teacher"
+
+                        res_adm_m = await session.execute(
+                            select(ChatMember).where(ChatMember.chat_max_id == chat_id, ChatMember.user_max_id == adm_id)
+                        )
+                        adm_m = res_adm_m.scalar_one_or_none()
+                        if not adm_m:
+                            session.add(ChatMember(chat_max_id=chat_id, user_max_id=adm_id, role="teacher"))
+                        else:
+                            adm_m.role = "teacher"
             except Exception:
                 pass
 
-        if not creator_id and triggering_user_id:
-            creator_id = triggering_user_id
-
-        if creator_id:
-            name = triggering_user_name if str(creator_id) == str(triggering_user_id) else None
-            teacher = await self.ensure_user(session, str(creator_id), display_name=name, role="teacher")
-            teacher.role = "teacher"
-            row.teacher_max_id = teacher.max_user_id
             await session.commit()
-            return teacher
+    except Exception as e:
+        print(f"[БОТ] Ошибка регистрации чата: {e}")
 
-        return None
+@dp.bot_started()
+async def on_bot_started(event: BotStarted):
+    user_id = str(event.from_user.user_id) if event.from_user else ""
+    user_name = extract_display_name(event.from_user)
+    print(f"[БОТ] Бот запущен пользователем {user_name} (ID: {user_id})")
 
-    async def ensure_user(
-        self,
-        session: AsyncSession,
-        max_user_id: Union[int, str],
-        display_name: Optional[str] = None,
-        role: str = "student",
-    ) -> User:
-        uid_str = str(max_user_id).strip()
-        conditions = [User.max_user_id == uid_str]
-        if uid_str.isdigit():
-            conditions.append(User.max_user_id.endswith(f"_{uid_str}"))
-        if display_name:
-            conditions.append(User.display_name == display_name)
-        stmt = select(User).where(or_(*conditions))
-        res = await session.execute(stmt)
-        user = res.scalars().first()
-        if user is None:
-            name = display_name or f"Ученик {uid_str}"
-            user = User(
-                max_user_id=uid_str,
-                display_name=name,
-                role=role,
-                balance_spasibki=0,
-                xp=0,
-                rank="Новичок",
-            )
-            session.add(user)
-            await session.flush()
-        ensure_report_token(user)
-        return user
+    async with async_session_factory() as session:
+        await ensure_user_and_chat(session, user_id=user_id, display_name=user_name, is_group=False)
 
-    async def handle_ask_command(
-        self,
-        session: AsyncSession,
-        message: dict[str, Any],
-        client: MaxBotClient,
-    ) -> None:
-        recipient = message.get("recipient", {})
-        chat_type = recipient.get("chat_type")
-        raw_chat_id = message.get("chat_id") or recipient.get("chat_id")
-        sender = message.get("sender", {})
-        raw_sender_id = str(sender.get("user_id", ""))
-        sender_name = sender.get("name") or sender.get("username") or f"Ученик {raw_sender_id}"
-        user = await self.ensure_user(session, raw_sender_id, display_name=sender_name)
-        sender_id = user.max_user_id
+    kb = build_main_menu_keyboard()
+    text = (
+        f"Здравствуйте, {user_name}!\n\n"
+        f"«Лига Помощников» — бот взаимопомощи для школьников в мессенджере MAX.\n\n"
+        f"• Задавайте вопросы по учебе командой /ask в чате группы или класса.\n"
+        f"• Отвечайте реплаем на вопросы одноклассников, получайте XP и спасибки.\n"
+        f"• Обменивайте спасибки на школьные бонусы в лавке наград!\n\n"
+        f"Используйте кнопки под сообщением для быстрого управления:"
+    )
+    if event.chat:
+        chat_target = int(event.chat.chat_id) if str(event.chat.chat_id).isdigit() else event.chat.chat_id
+        await event.bot.send_message(chat_id=chat_target, text=text, attachments=[kb.as_markup()])
 
-        raw_text = (
-            message.get("body", {}).get("text")
-            if isinstance(message.get("body"), dict)
-            else None
-        ) or message.get("text") or ""
-        raw_text = raw_text.strip()
-        parts = raw_text.split(None, 1)
-        raw_question = parts[1].strip() if len(parts) > 1 else ""
-        subject, question_text = parse_ask_text(raw_question)
-        image_url = None
-        body = message.get("body") if isinstance(message.get("body"), dict) else {}
-        for att in body.get("attachments") or message.get("attachments") or []:
-            if not isinstance(att, dict):
-                continue
-            payload = att.get("payload") if isinstance(att.get("payload"), dict) else {}
-            url = payload.get("url")
-            if url and ("image" in str(att.get("type", "")).lower() or "photo" in str(att.get("type", "")).lower() or url):
-                image_url = url
-                break
-        if not question_text and image_url:
-            question_text = PHOTO_FALLBACK
-            if subject == "Учёба":
-                subject = "Точные науки"
-        if not question_text:
-            return
+@dp.message_created(CommandStart())
+@dp.message_created(Command("start"))
+async def on_start_command(event: MessageCreated):
+    user_id = str(event.from_user.user_id) if event.from_user else ""
+    user_name = extract_display_name(event.from_user)
+    chat_id = str(event.chat.chat_id) if event.chat else ""
+    chat_type = getattr(event.chat, "type", "") or ""
+    is_group = bool(chat_type in ("chat", "group", "channel") and getattr(event.chat, "title", None))
+    chat_title = event.chat.title if is_group else None
+    owner_id = str(event.chat.owner_id) if event.chat and getattr(event.chat, "owner_id", None) else None
 
-        target_chat_id = to_int_id(raw_chat_id) or raw_chat_id
-        target_uid = to_int_id(raw_sender_id) or raw_sender_id
-        is_group = target_chat_id and target_chat_id != 0 and chat_type != "dialog" and target_chat_id != target_uid
-        if not is_group:
-            await client.send_message(
-                user_id=target_uid,
-                text=(
-                    "❓ Вопросы задают в чате класса в MAX.\n\n"
-                    "Напишите там `/ask Как решить №245 по геометрии?`\n"
-                    "Одноклассники отвечают реплаем, автор подтверждает помощь."
-                ),
-            )
-            return
-        group_cid = str(target_chat_id if is_group else target_uid)
-        ask_mid = (
-            message.get("body", {}).get("mid")
-            if isinstance(message.get("body"), dict)
-            else None
-        ) or message.get("id") or message.get("mid") or ""
+    print(f"[БОТ] Команда /start от {user_name} (ID: {user_id})")
 
-        duplicate = await find_hanging_duplicate(session, group_cid, question_text)
-        if duplicate:
-            dup_text = (
-                "⏳ Этот вопрос уже висит.\n\n"
-                f"«{duplicate.text}»\n\n"
-                "Ответьте реплаем на карточку выше — второй `/ask` не нужен."
-            )
-            if is_group:
-                await client.send_message(chat_id=target_chat_id, text=dup_text)
-            else:
-                await client.send_message(user_id=target_uid, text=dup_text)
-            return
-
-        question = Question(
-            group_chat_id=group_cid,
-            group_message_id=f"pending-{ask_mid or sender_id}",
-            ask_mid=str(ask_mid) if ask_mid else None,
-            author_max_id=sender_id,
-            text=question_text,
-            subject=subject,
-            image_url=image_url,
-            status="open",
-        )
-        session.add(question)
-        await session.flush()
-
-        class_row = await get_class_settings(session, group_cid)
-        if not class_row.teacher_max_id and is_group:
-            await self._auto_assign_chat_teacher(session, group_cid, client, triggering_user_id=raw_sender_id, triggering_user_name=sender_name)
-
-        announcement = (
-            f"❓ Вопрос от {sender_name} · {subject}:\n"
-            f"{question_text}\n\n"
-            "💬 Ответьте реплаем на это сообщение, чтобы помочь однокласснику!"
-        )
-        if is_group:
-            resp = await client.send_message(chat_id=target_chat_id, text=announcement)
-        else:
-            resp = await client.send_message(user_id=target_uid, text=announcement)
-
-        bot_msg = resp.get("message", {})
-        bot_mid = (
-            bot_msg.get("body", {}).get("mid")
-            if isinstance(bot_msg.get("body"), dict)
-            else None
-        ) or bot_msg.get("id") or bot_msg.get("mid") or question.group_message_id
-        question.group_message_id = str(bot_mid)
-        await GamificationService.evaluate_achievements(session, sender_id)
-        await session.commit()
-
-    async def handle_reply_message(
-        self,
-        session: AsyncSession,
-        message: dict[str, Any],
-        client: MaxBotClient,
-        reply_to_mid: str,
-    ) -> None:
-        recipient = message.get("recipient", {})
-        chat_type = recipient.get("chat_type")
-        raw_chat_id = message.get("chat_id") or recipient.get("chat_id")
-        sender = message.get("sender", {})
-        raw_sender_id = str(sender.get("user_id", ""))
-        sender_name = sender.get("name") or sender.get("username") or f"Ученик {raw_sender_id}"
-        user = await self.ensure_user(session, raw_sender_id, display_name=sender_name)
-        sender_id = user.max_user_id
-
-        stmt = select(Question).where(
-            Question.status == "open",
-            or_(
-                Question.group_message_id == str(reply_to_mid),
-                Question.ask_mid == str(reply_to_mid),
-            ),
-        )
-        res = await session.execute(stmt)
-        question = res.scalar_one_or_none()
-        if question is None:
-            return
-
-        is_same_author = (
-            str(question.author_max_id).strip().lower() == sender_id.strip().lower()
-            or str(question.author_max_id).strip().lower() == raw_sender_id.strip().lower()
-            or to_int_id(question.author_max_id) == to_int_id(raw_sender_id)
-        )
-        target_chat = to_int_id(raw_chat_id) or raw_chat_id
-        target_uid = to_int_id(raw_sender_id) or raw_sender_id
-
-        if is_same_author or not AntiCheatService.validate_answer_eligibility(question.author_max_id, sender_id):
-            reject_text = f"⚠️ {sender_name}, нельзя отвечать на собственный вопрос в Лиге Помощников!"
-            if target_chat and target_chat != 0 and chat_type != "dialog" and target_chat != target_uid:
-                await client.send_message(chat_id=target_chat, text=reject_text)
-            else:
-                await client.send_message(user_id=target_uid, text=reject_text)
-            return
-
-        incoming_mid = (
-            message.get("body", {}).get("mid")
-            if isinstance(message.get("body"), dict)
-            else None
-        ) or message.get("id") or message.get("mid") or ""
-        answer_text = (
-            message.get("body", {}).get("text")
-            if isinstance(message.get("body"), dict)
-            else None
-        ) or message.get("text") or ""
-
-        answer = Answer(
-            question_id=question.id,
-            author_max_id=sender_id,
-            group_message_id=str(incoming_mid),
-            text=answer_text,
-            status="pending",
-        )
-        session.add(answer)
-        await session.flush()
-
-        keyboard = KeyboardBuilder.question_verification_keyboard(answer.id)
-        author_target_uid = to_int_id(question.author_max_id)
-        dm_resp = await client.send_message(
-            user_id=author_target_uid,
-            text=(
-                f"К вашему вопросу получен ответ:\n«{answer_text}»\n\n"
-                "Как ответ?\n"
-                "• Понятно — полный разбор (+50 XP)\n"
-                "• Коротко — помог, но без объяснения (+25 XP)\n"
-                "• С ошибкой — вопрос останется открытым (+10 XP)"
-            ),
-            attachments=keyboard,
-        )
-        dm_msg = dm_resp.get("message", {})
-        dm_mid = (
-            dm_msg.get("body", {}).get("mid")
-            if isinstance(dm_msg.get("body"), dict)
-            else None
-        ) or dm_msg.get("id") or dm_msg.get("mid")
-        if dm_mid:
-            answer.dm_approval_message_id = str(dm_mid)
-        await session.commit()
-
-    async def handle_manage_command(
-        self,
-        session: AsyncSession,
-        message: dict[str, Any],
-        client: MaxBotClient,
-    ) -> None:
-        settings = get_settings()
-        recipient = message.get("recipient", {})
-        chat_type = recipient.get("chat_type")
-        raw_chat_id = message.get("chat_id") or recipient.get("chat_id")
-        sender = message.get("sender", {})
-        raw_sender_id = str(sender.get("user_id", ""))
-        sender_name = sender.get("name") or sender.get("username")
-        user = await self.ensure_user(session, raw_sender_id, display_name=sender_name)
-        target_uid = to_int_id(raw_sender_id)
-        target_chat = to_int_id(raw_chat_id) or raw_chat_id
-        is_group = target_chat and target_chat != 0 and chat_type != "dialog" and target_chat != target_uid
-
-        if is_group:
-            teacher = await self._auto_assign_chat_teacher(
-                session, str(target_chat), client, triggering_user_id=raw_sender_id, triggering_user_name=sender_name
-            )
-            is_teacher = user.role in ("teacher", "admin") or (teacher and teacher.max_user_id == user.max_user_id)
-            if not is_teacher:
-                t_name = teacher.display_name if teacher else "учителю"
-                await client.send_message(user_id=target_uid, text=f"⛔ Панель управления доступна только учителю класса ({t_name}).")
-                return
-
-        base_url = settings.WEBAPP_BASE_URL.rstrip("/")
-        webapp_url = f"{base_url}/?user_id={user.max_user_id}"
-        keyboard = KeyboardBuilder.teacher_menu_keyboard(webapp_url)
-        menu_text = "👨‍🏫 Панель учителя Лиги Помощников:\nИспользуйте веб-кабинет для модерации наград, настройки класса и рейтинга:"
-        await client.send_message(user_id=target_uid, text=menu_text, attachments=keyboard)
-
-    async def handle_me_command(self, session: AsyncSession, message: dict[str, Any], client: MaxBotClient) -> None:
-        sender = message.get("sender", {})
-        raw_sender_id = str(sender.get("user_id", ""))
-        user = await self.ensure_user(session, raw_sender_id, display_name=sender.get("name"))
-        token = ensure_report_token(user)
-        await session.commit()
-        settings = get_settings()
-        url = f"{settings.WEBAPP_BASE_URL.rstrip('/')}/p/{token}"
-        target_uid = to_int_id(raw_sender_id)
-        await client.send_message(
-            user_id=target_uid,
-            text=(
-                f"👤 {user.display_name}\n"
-                f"🎖 {user.rank} · {user.xp} XP · 🪙 {user.balance_spasibki}\n"
-                f"👨‍👩‍👧 Для родителя (неделя, не переписка): {url}"
-            ),
+    async with async_session_factory() as session:
+        await ensure_user_and_chat(
+            session,
+            user_id=user_id,
+            display_name=user_name,
+            chat_id=chat_id if is_group else None,
+            chat_title=chat_title,
+            owner_id=owner_id,
+            is_group=is_group,
         )
 
-    async def handle_strict_command(self, session: AsyncSession, message: dict[str, Any], client: MaxBotClient) -> None:
-        recipient = message.get("recipient", {})
-        chat_type = recipient.get("chat_type")
-        raw_chat_id = message.get("chat_id") or recipient.get("chat_id")
-        sender = message.get("sender", {})
-        raw_sender_id = str(sender.get("user_id", ""))
-        user = await self.ensure_user(session, raw_sender_id, display_name=sender.get("name"))
-        target_chat = to_int_id(raw_chat_id) or raw_chat_id
-        target_uid = to_int_id(raw_sender_id)
-        is_group = target_chat and target_chat != 0 and chat_type != "dialog" and target_chat != target_uid
-        if not is_group:
-            await client.send_message(user_id=target_uid, text="Строгий режим включают в чате класса.")
-            return
-        if user.role not in ("teacher", "admin"):
-            await client.send_message(user_id=target_uid, text="⛔ Только учитель может включать строгий режим.")
-            return
-        raw_text = (
-            message.get("body", {}).get("text")
-            if isinstance(message.get("body"), dict)
-            else None
-        ) or message.get("text") or ""
-        parts = raw_text.split()[1:]
-        settings_row = await get_class_settings(session, str(target_chat))
-        token = parts[0].lower() if parts else "on"
-        if token in ("off", "выкл", "0", "нет"):
-            settings_row.strict_mode = False
-            settings_row.strict_subjects = None
-            label = "ГигаЧат снова доступен по всем темам."
-        elif token in ("on", "вкл", "все", "all"):
-            settings_row.strict_mode = True
-            settings_row.strict_subjects = None
-            label = "ГигаЧат выключен по всем предметам."
-        else:
-            subjects = []
-            for part in parts:
-                resolved = resolve_subject_name(part)
-                if resolved == "*":
-                    subjects = ["*"]
-                    break
-                if resolved and resolved not in subjects:
-                    subjects.append(resolved)
-            if not subjects:
-                await client.send_message(user_id=target_uid, text="Использование: `/strict физика` · `/strict on` · `/strict off`")
-                return
-            all_on, encoded = encode_strict_subjects(subjects)
-            settings_row.strict_mode = all_on
-            settings_row.strict_subjects = encoded
-            shown = "все предметы" if all_on else ", ".join(decode_strict_subjects(settings_row))
-            label = f"ГигаЧат выключен для: {shown}."
-        await session.commit()
-        await client.send_message(chat_id=target_chat, text=f"🔒 {label}")
+    kb = build_main_menu_keyboard()
+    text = (
+        f"Здравствуйте, {user_name}!\n\n"
+        f"Лига Помощников готова к работе. Выберите действие на клавиатуре бота:"
+    )
+    await send_response_or_dm(event, text=text, kb=kb, is_group=is_group)
 
-    async def _require_class_teacher(self, session, message, client) -> Optional[tuple]:
-        recipient = message.get("recipient", {})
-        chat_type = recipient.get("chat_type")
-        raw_chat_id = message.get("chat_id") or recipient.get("chat_id")
-        sender = message.get("sender", {})
-        raw_sender_id = str(sender.get("user_id", ""))
-        user = await self.ensure_user(session, raw_sender_id, display_name=sender.get("name"))
-        target_chat = to_int_id(raw_chat_id) or raw_chat_id
-        target_uid = to_int_id(raw_sender_id)
-        is_group = target_chat and target_chat != 0 and chat_type != "dialog" and target_chat != target_uid
-        return user, target_chat, target_uid, is_group
+@dp.message_created(Command("help"))
+async def on_help_command(event: MessageCreated):
+    user_id = str(event.from_user.user_id) if event.from_user else ""
+    user_name = extract_display_name(event.from_user)
+    chat_type = getattr(event.chat, "type", "") or ""
+    is_group = bool(chat_type in ("chat", "group", "channel") and getattr(event.chat, "title", None))
+    print(f"[БОТ] Команда /help от {user_name}")
 
-    async def handle_exam_command(self, session: AsyncSession, message: dict[str, Any], client: MaxBotClient) -> None:
-        user, target_chat, target_uid, is_group = await self._require_class_teacher(session, message, client)
-        if not is_group:
-            await client.send_message(user_id=target_uid, text="Режим контрольной включают в чате класса: `/exam физика`.")
-            return
-        row = await get_class_settings(session, str(target_chat))
-        if user.role not in ("teacher", "admin") and row.teacher_max_id != user.max_user_id:
-            await client.send_message(user_id=target_uid, text="⛔ Только учитель включает контрольную.")
-            return
-        raw_text = (
-            message.get("body", {}).get("text")
-            if isinstance(message.get("body"), dict)
-            else None
-        ) or message.get("text") or ""
-        parts = raw_text.split()[1:]
-        if not parts:
-            text = exam_label(row) or "Контрольной нет. `/exam физика` · `/exam on` · `/exam off`"
-            await client.send_message(chat_id=target_chat, text=f"📝 {text}")
-            return
-        token = parts[0].lower()
-        days = 1
-        for part in parts[1:]:
-            if part.isdigit():
-                days = int(part)
-        if token in ("off", "выкл", "0", "нет"):
-            set_exam_mode(row, None)
-            label = "Контрольная снята. ГигаЧат и лавка снова можно."
-        elif token in ("on", "вкл", "все", "all"):
-            set_exam_mode(row, ["*"], days=days)
-            label = exam_label(row)
-        else:
-            subjects = []
-            for part in parts:
-                if part.isdigit():
-                    continue
-                resolved = resolve_subject_name(part)
-                if resolved == "*":
-                    subjects = ["*"]
-                    break
-                if resolved and resolved not in subjects:
-                    subjects.append(resolved)
-            if not subjects:
-                await client.send_message(user_id=target_uid, text="Использование: `/exam физика` · `/exam on` · `/exam off` · `/exam физика 2`")
-                return
-            set_exam_mode(row, subjects, days=days)
-            label = exam_label(row)
-        await session.commit()
-        await client.send_message(chat_id=target_chat, text=f"📝 {label}")
+    kb = build_main_menu_keyboard()
+    text = (
+        f"Инструкция по работе с Лигой Помощников:\n\n"
+        f"1. Добавьте бота в ваш учебный чат.\n"
+        f"2. Чтобы задать вопрос, напишите:\n/ask <текст вопроса>\n"
+        f"3. Чтобы помочь, ответьте реплаем (Reply) на сообщение бота с вопросом.\n"
+        f"4. Автор вопроса нажимает кнопку «Помог», и помощнику начисляется +50 XP и +1 спасибка.\n"
+        f"5. Накопленные спасибки можно обменивать на награды от учителей."
+    )
+    await send_response_or_dm(event, text=text, kb=kb, is_group=is_group)
 
-    async def handle_setup_command(self, session: AsyncSession, message: dict[str, Any], client: MaxBotClient) -> None:
-        user, target_chat, target_uid, is_group = await self._require_class_teacher(session, message, client)
-        if is_group:
-            teacher = await self._auto_assign_chat_teacher(
-                session, str(target_chat), client, triggering_user_id=user.max_user_id, triggering_user_name=user.display_name
-            )
-            row = await get_class_settings(session, str(target_chat))
-            is_teacher = user.role in ("teacher", "admin") or (teacher and teacher.max_user_id == user.max_user_id)
-            if not is_teacher:
-                t_name = teacher.display_name if teacher else "учителю"
-                await client.send_message(user_id=target_uid, text=f"⚙️ Настройки Лиги доступны только учителю класса ({t_name}).")
-                return
+@dp.message_created(Command("manage"))
+async def on_manage_command(event: MessageCreated):
+    user_id = str(event.from_user.user_id) if event.from_user else ""
+    user_name = extract_display_name(event.from_user)
+    chat_type = getattr(event.chat, "type", "") or ""
+    is_group = bool(chat_type in ("chat", "group", "channel") and getattr(event.chat, "title", None))
+    print(f"[БОТ] Команда /manage от {user_name}")
 
-            text = self._setup_summary(row, user)
-            await client.send_message(user_id=target_uid, text=text, attachments=build_setup_home_keyboard())
-            return
+    async with async_session_factory() as session:
+        res = await session.execute(select(User).where(User.max_user_id == user_id))
+        user = res.scalar_one_or_none()
+        is_teacher = bool(user and user.role in ("teacher", "admin"))
 
-        # Called in PM (в ЛС)
-        stmt = select(ClassSettings).where(ClassSettings.teacher_max_id == user.max_user_id)
-        class_res = await session.execute(stmt)
-        row = class_res.scalars().first()
-        if not row:
-            row = await primary_class_settings(session)
-            if not row.teacher_max_id:
-                row.teacher_max_id = user.max_user_id
-                user.role = "teacher"
-                await session.commit()
+    kb = build_main_menu_keyboard()
 
-        text = self._setup_summary(row, user)
-        await client.send_message(user_id=target_uid, text=text, attachments=build_setup_home_keyboard())
-
-    def _setup_summary(self, row, user) -> str:
-        strict = decode_strict_subjects(row)
-        if "*" in strict or row.strict_mode:
-            ai = "выключен везде"
-        elif strict:
-            ai = "выключен для: " + ", ".join(strict)
-        else:
-            ai = "стандартный"
-        digest = "воскресенье 18:00 включено" if getattr(row, "digest_enabled", True) is not False else "дайджест выключен"
-        exam = exam_label(row) or "контрольной нет"
-        return (
-            f"⚙️ Настройки Лиги Помощников для класса\nУчитель: {user.display_name}\n\n"
-            f"1. Предметы: {', '.join(CLASS_SUBJECTS)}\n"
-            f"2. Строгий режим: {ai}\n"
-            f"3. Дайджест: {digest}\n"
-            f"4. Родителям: ребёнок пишет боту `/me` в ЛС — ссылка на неделю.\n"
-            f"5. Режим контрольной: {exam}\n\n"
-            "Выберите раздел для настройки (все настройки меняются здесь, в ЛС):"
+    if is_teacher:
+        text = (
+            f"Кабинет учителя для {user_name}\n\n"
+            f"Вам доступно одобрение заявок учеников на награды, создание бонусов и вручение награды «Выбор учителя» (+100 XP и +20 спасибок)."
+        )
+    else:
+        text = (
+            f"Кабинет учителя\n\n"
+            f"Этот раздел предназначен для преподавателей и кураторов учебных групп."
         )
 
-    async def handle_setup_callback(self, session, client, callback, user) -> None:
-        callback_id = str(callback.get("callback_id", ""))
-        payload = str(callback.get("payload", "")).strip()
-        msg = callback.get("message") or {}
-        raw_chat_id = msg.get("chat_id") or (msg.get("recipient") or {}).get("chat_id") or callback.get("chat_id")
-        target_chat = to_int_id(raw_chat_id) or raw_chat_id
-        target_uid = to_int_id(user.max_user_id)
+    await send_response_or_dm(event, text=text, kb=kb, is_group=is_group)
 
-        # Support configuration in PM or group
-        if target_chat and target_chat != target_uid and target_chat != 0:
-            row = await get_class_settings(session, str(target_chat))
-        else:
-            stmt = select(ClassSettings).where(ClassSettings.teacher_max_id == user.max_user_id)
-            row = (await session.execute(stmt)).scalars().first()
-            if not row:
-                row = await primary_class_settings(session)
+@dp.message_created(Command("ask"))
+async def on_ask_command(event: MessageCreated):
+    user_id = str(event.from_user.user_id) if event.from_user else ""
+    user_name = extract_display_name(event.from_user)
+    chat_id = str(event.chat.chat_id) if event.chat else ""
+    chat_type = getattr(event.chat, "type", "") or ""
+    is_group = bool(chat_type in ("chat", "group", "channel") and getattr(event.chat, "title", None))
+    chat_title = event.chat.title if is_group else "Учебный чат"
+    owner_id = str(event.chat.owner_id) if event.chat and getattr(event.chat, "owner_id", None) else None
 
-        if user.role not in ("teacher", "admin"):
-            user.role = "teacher"
-            if not row.teacher_max_id:
-                row.teacher_max_id = user.max_user_id
-            row.teacher_max_id = user.max_user_id
+    raw_text = event.message.body.text if event.message and event.message.body else ""
+    parts = raw_text.split(maxsplit=1)
+    question_text = parts[1].strip() if len(parts) > 1 else ""
 
-        action = payload.split(":", 1)[1] if ":" in payload else ""
-        note = "Готово"
-        extra = None
-        kb = build_setup_home_keyboard()
-        if action == "subjects":
-            kb = format_inline_keyboard([
-                [build_callback_button("Точные + гуманитарные", payload="setup:subj:all")],
-                [build_callback_button("Только точные", payload="setup:subj:exact")],
-                [build_callback_button("Только гуманитарные", payload="setup:subj:hum")],
-                [build_callback_button("« Назад", payload="setup:home")],
-            ])
-            extra = "Полки класса. Ученик всё равно пишет предмет словами: `/ask физика …`."
-        elif action.startswith("subj:"):
-            kind = action.split(":", 1)[1]
-            if kind == "exact":
-                row.strict_mode = False
-                row.strict_subjects = "Гуманитарные"
-                note = "ИИ оставлен для точных наук"
-            elif kind == "hum":
-                row.strict_mode = False
-                row.strict_subjects = "Точные науки"
-                note = "ИИ оставлен для гуманитарных"
-            else:
-                row.strict_mode = False
-                row.strict_subjects = None
-                note = "Обе полки открыты"
-            extra = self._setup_summary(row, user)
-        elif action == "strict":
-            kb = format_inline_keyboard([
-                [build_callback_button("ИИ можно", payload="setup:ai:off")],
-                [build_callback_button("Выкл ИИ везде", payload="setup:ai:all")],
-                [build_callback_button("Без ИИ: точные", payload="setup:ai:exact")],
-                [build_callback_button("« Назад", payload="setup:home")],
-            ])
-            extra = "Строгий режим: ГигаЧат не даёт подсказку в выбранных темах. Вопросы одноклассникам остаются."
-        elif action.startswith("ai:"):
-            kind = action.split(":", 1)[1]
-            if kind == "all":
-                row.strict_mode = True
-                row.strict_subjects = None
-                note = "ГигаЧат выключен"
-            elif kind == "exact":
-                row.strict_mode = False
-                row.strict_subjects = "Точные науки"
-                note = "Без ИИ по точным наукам"
-            else:
-                row.strict_mode = False
-                row.strict_subjects = None
-                note = "ГигаЧат снова можно"
-            extra = self._setup_summary(row, user)
-        elif action == "digest":
-            kb = format_inline_keyboard([
-                [build_callback_button("Вс 18:00 включить", payload="setup:dig:on")],
-                [build_callback_button("Не присылать", payload="setup:dig:off")],
-                [build_callback_button("« Назад", payload="setup:home")],
-            ])
-            extra = "Воскресный дайджест: кто помогал, какие темы, висящие вопросы."
-        elif action.startswith("dig:"):
-            row.digest_enabled = action.endswith("on")
-            note = "Дайджест включён" if row.digest_enabled else "Дайджест выключен"
-            extra = self._setup_summary(row, user)
-        elif action == "parents":
-            extra = (
-                "👨‍👩‍👧 Родителям не нужна переписка класса.\n"
-                "Попросите ребёнка написать боту в личке: `/me`\n"
-                "Там ссылка на неделю: что спрашивал и кому помог."
-            )
-            note = "Текст для родителей"
-        elif action == "exam":
-            kb = format_inline_keyboard([
-                [build_callback_button("Сегодня все темы", payload="setup:ex:all")],
-                [build_callback_button("Сегодня точные", payload="setup:ex:exact")],
-                [build_callback_button("Снять контрольную", payload="setup:ex:off")],
-                [build_callback_button("« Назад", payload="setup:home")],
-            ])
-            extra = "На контрольной ГигаЧат и лавка выключены. `/ask` и ответы реплаем работают."
-        elif action.startswith("ex:"):
-            kind = action.split(":", 1)[1]
-            if kind == "all":
-                set_exam_mode(row, ["*"], days=1)
-            elif kind == "exact":
-                set_exam_mode(row, ["Точные науки"], days=1)
-            else:
-                set_exam_mode(row, None)
-            note = "Контрольная обновлена"
-            extra = self._setup_summary(row, user)
-        elif action == "done":
-            row.setup_done = True
-            extra = self._setup_summary(row, user) + "\n\nГотово. Дальше: `/exam`, `/strict`, `/manage`."
-            note = "Класс настроен"
-            kb = None
-        else:
-            extra = self._setup_summary(row, user)
-        await session.commit()
-        await client.answer_callback(callback_id=callback_id, notification=note)
-        if extra:
-            await client.send_message(user_id=target_uid, text=extra, attachments=kb)
-
-    async def _send_gigahint(self, session, client, callback, user, q_id: int) -> None:
-        callback_id = str(callback.get("callback_id", ""))
-        await client.answer_callback(callback_id=callback_id, notification="Подсказки ИИ отключены в чате класса")
-
-    async def handle_message_callback(
-        self,
-        session: AsyncSession,
-        callback: dict[str, Any],
-        client: MaxBotClient,
-    ) -> None:
-        callback_id = str(callback.get("callback_id", ""))
-        payload = str(callback.get("payload", "")).strip()
-        user_info = callback.get("user", {})
-        raw_user_id = str(user_info.get("user_id", ""))
-        user = await self.ensure_user(session, raw_user_id, display_name=user_info.get("name"))
-
-        answer_id: Optional[int] = None
-        decision: Optional[str] = None
-
-        if payload.startswith("verify_help:"):
-            parts = payload.split(":")
-            if len(parts) >= 3 and parts[1].isdigit():
-                answer_id = int(parts[1])
-                decision = parts[2]
-        elif payload.startswith("verify_yes:"):
-            parts = payload.split(":")
-            if len(parts) >= 2 and parts[1].isdigit():
-                answer_id = int(parts[1])
-                decision = "yes"
-        elif payload.startswith("verify_no:"):
-            parts = payload.split(":")
-            if len(parts) >= 2 and parts[1].isdigit():
-                answer_id = int(parts[1])
-                decision = "no"
-
-        if payload.startswith("gigahint:"):
-            await client.answer_callback(callback_id=callback_id, notification="Подсказки ИИ отключены в чате класса")
-            return
-
-        if payload.startswith("setup:"):
-            await self.handle_setup_callback(session, client, callback, user)
-            return
-
-        if answer_id is None or decision not in ("yes", "no", "clear", "short", "error"):
-            return
-
-        if answer_id in self._in_flight_answers:
-            await client.answer_callback(callback_id=callback_id, notification="Обрабатывается…")
-            return
-
-        self._in_flight_answers.add(answer_id)
-        try:
-            ans_stmt = select(Answer).where(Answer.id == answer_id)
-            ans_res = await session.execute(ans_stmt)
-            answer = ans_res.scalar_one_or_none()
-            if answer is None:
-                await client.answer_callback(callback_id=callback_id, notification="Ответ не найден")
-                return
-
-            if answer.status != "pending":
-                await client.answer_callback(callback_id=callback_id, notification="Ответ уже обработан")
-                return
-
-            q_stmt = select(Question).where(Question.id == answer.question_id)
-            q_res = await session.execute(q_stmt)
-            question = q_res.scalar_one_or_none()
-            if question is None:
-                await client.answer_callback(callback_id=callback_id, notification="Вопрос не найден")
-                return
-
-            is_author = (
-                str(question.author_max_id).strip().lower() == user.max_user_id.strip().lower()
-                or str(question.author_max_id).strip().lower() == raw_user_id.strip().lower()
-                or to_int_id(question.author_max_id) == to_int_id(raw_user_id)
-            )
-            if not is_author:
-                await client.answer_callback(
-                    callback_id=callback_id,
-                    notification="Только автор вопроса может подтвердить ответ!",
-                )
-                return
-
-            helper_uid = to_int_id(answer.author_max_id)
-            group_cid = to_int_id(question.group_chat_id) or question.group_chat_id
-
-            quality = {"yes": "clear", "no": "error"}.get(decision, decision)
-            spasibki, xp = await GamificationService.award_gratitude(
-                session, question, answer, quality=quality
-            )
-            q_label = QUALITY_LABELS.get(quality, quality)
-            if quality == "error":
-                await client.answer_callback(
-                    callback_id=callback_id,
-                    notification="Отметили ошибку",
-                    message={"text": "Вопрос остаётся открытым. Можно ждать другой разбор."},
-                )
-                await client.send_message(
-                    user_id=helper_uid,
-                    text=f"Автор отметил ответ как «с ошибкой». +{xp} XP за попытку, вопрос ещё открыт.",
-                )
-            else:
-                await client.answer_callback(
-                    callback_id=callback_id,
-                    notification="Благодарность отправлена!",
-                    message={"text": f"✅ Вопрос закрыт. Оценка: {q_label}."},
-                )
-                helper_stmt = select(User).where(User.max_user_id == answer.author_max_id)
-                helper_user = (await session.execute(helper_stmt)).scalar_one_or_none()
-                streak = helper_user.help_streak if helper_user else 0
-                streak_line = f" Серия: {streak} дн. 🔥" if streak else ""
-                await client.send_message(
-                    user_id=helper_uid,
-                    text=f"Ответ «{q_label}». +{spasibki} спасибка, +{xp} XP.{streak_line}",
-                )
-        finally:
-            self._in_flight_answers.discard(answer_id)
-
-    async def handle_bot_started(
-        self,
-        session: AsyncSession,
-        update: dict[str, Any],
-        client: MaxBotClient,
-    ) -> None:
-        user_info = update.get("user", {})
-        uid = str(user_info.get("user_id", ""))
-        name = user_info.get("name") or user_info.get("username") or f"Ученик {uid}"
-        user = await self.ensure_user(session, uid, display_name=name)
-        chat_id = update.get("chat_id")
-        user_target = to_int_id(uid)
-        c_id = to_int_id(chat_id)
-        is_group = c_id and c_id != 0 and c_id != user_target
-
-        now = datetime.now(timezone.utc).timestamp()
-        if now - self._last_start_ts.get(uid, 0.0) < 5.0:
-            return
-        self._last_start_ts[uid] = now
-
-        settings = get_settings()
-        webapp_url = f"{settings.WEBAPP_BASE_URL.rstrip('/')}/?user_id={uid}"
-        keyboard = format_inline_keyboard([
-            [build_link_button("Открыть Лигу Помощников", url=webapp_url)]
-        ])
-
-        if is_group:
-            teacher = await self._auto_assign_chat_teacher(
-                session, str(c_id), client, triggering_user_id=uid, triggering_user_name=name
-            )
-            t_name = teacher.display_name if teacher else "Создатель чата"
-            welcome_text = (
-                f"👋 Привет, класс! Я бот «Лига Помощников» 🎓\n\n"
-                "• Задавайте вопросы по учёбе: `/ask <вопрос>`\n"
-                "• Отвечайте реплаем на карточку вопроса, чтобы заработать опыт и спасибки 🪙\n"
-                f"• Учитель класса: {t_name}\n\n"
-                "Учитель может написать боту `/setup` или `/manage` для настройки лавки наград."
-            )
-            await client.send_message(chat_id=c_id, text=welcome_text, attachments=keyboard)
-        else:
-            welcome_text = (
-                f"Привет, {name}! Добро пожаловать в Лигу Помощников 🎓\n\n"
-                "Добавьте меня в чат вашего класса в MAX!\n"
-                "• Задавайте вопросы через `/ask` и помогайте одноклассникам реплаем\n"
-                "• За помощь начисляются опыт, звания и спасибки 🪙\n"
-                "• В школьной лавке спасибки можно обменивать на награды от учителя!"
-            )
-            await client.send_message(user_id=user_target, text=welcome_text, attachments=keyboard)
-
-    async def handle_hint_command(
-        self, session: AsyncSession, message: dict[str, Any], client: MaxBotClient
-    ) -> None:
-        sender = message.get("sender", {})
-        raw_sender_id = str(sender.get("user_id", ""))
-        user = await self.ensure_user(session, raw_sender_id, display_name=sender.get("name"))
-        target_uid = to_int_id(raw_sender_id)
-
-        raw_text = (
-            message.get("body", {}).get("text")
-            if isinstance(message.get("body"), dict)
-            else None
-        ) or message.get("text") or ""
-        question_text = raw_text.replace("/hint", "", 1).strip()
-        if not question_text:
-            await client.send_message(
-                user_id=target_uid,
-                text="💡 Напишите `/hint <вопрос или задача>` в этом личном диалоге, и я дам наводящую подсказку!",
-            )
-            return
-
-        from app.services.gigachat import make_private_hint
-        hint = await make_private_hint(question_text)
-        await client.send_message(
-            user_id=target_uid,
-            text=f"🤖 Подсказка наставника (в ЛС):\n\n{hint}",
+    if not question_text:
+        await event.message.reply(
+            text="Пожалуйста, укажите текст вопроса после команды.\n\nПример:\n/ask Ребята, как решить задачу №4 по геометрии?"
         )
-
-    async def handle_message_created(
-        self,
-        session: AsyncSession,
-        message: dict[str, Any],
-        client: MaxBotClient,
-    ) -> None:
-        raw_text = (
-            message.get("body", {}).get("text")
-            if isinstance(message.get("body"), dict)
-            else None
-        ) or message.get("text") or ""
-        text = raw_text.strip()
-
-        if text.startswith("/hint"):
-            await self.handle_hint_command(session, message, client)
-            return
-
-        if text.startswith("/ask"):
-            await self.handle_ask_command(session, message, client)
-            return
-
-        if text.startswith("/me"):
-            await self.handle_me_command(session, message, client)
-            return
-
-        if text.startswith("/strict"):
-            await self.handle_strict_command(session, message, client)
-            return
-
-        if text.startswith("/exam"):
-            await self.handle_exam_command(session, message, client)
-            return
-
-        if text.startswith("/setup"):
-            await self.handle_setup_command(session, message, client)
-            return
-
-        if text.startswith("/manage"):
-            await self.handle_manage_command(session, message, client)
-            return
-
-        if text.startswith(("/start", "/help")) or text.lower() in ("привет", "здравствуйте", "помощь", "меню", "хелп", "start", "help"):
-            recipient = message.get("recipient", {})
-            chat_type = recipient.get("chat_type")
-            raw_chat_id = message.get("chat_id") or recipient.get("chat_id")
-            sender = message.get("sender", {})
-            raw_sender_id = str(sender.get("user_id", ""))
-            sender_name = sender.get("name") or sender.get("username") or f"Ученик {raw_sender_id}"
-            user = await self.ensure_user(session, raw_sender_id, display_name=sender_name)
-            target_chat = to_int_id(raw_chat_id) or raw_chat_id
-            target_uid = to_int_id(raw_sender_id)
-
-            now = datetime.now(timezone.utc).timestamp()
-            if now - self._last_start_ts.get(raw_sender_id, 0.0) < 5.0:
-                # Avoid sending duplicate greeting if bot_started was just handled
-                return
-            self._last_start_ts[raw_sender_id] = now
-
-            settings = get_settings()
-            webapp_url = f"{settings.WEBAPP_BASE_URL.rstrip('/')}/?user_id={raw_sender_id}"
-            keyboard = format_inline_keyboard([
-                [build_link_button("Открыть Лигу Помощников", url=webapp_url)]
-            ])
-            help_text = (
-                f"👋 Привет, {sender_name}! Бот «Лига Помощников» для взаимопомощи в учёбе.\n\n"
-                "1. `/ask физика Как найти силу трения?` — задать вопрос классу (или фото с подписью `/ask`).\n"
-                "2. Одноклассник отвечает реплаем на сообщение вопроса.\n"
-                "3. Автор подтверждает помощь: понятно (+50 XP, +1 🪙), коротко (+25 XP) или с ошибкой.\n"
-                "4. Копите спасибки и обменивайте их на бонусы от учителя в лавке наград!\n\n"
-                "Учитель: `/setup` · `/exam` · `/strict` · `/manage`.\n"
-                "`/me` — сводка родителю за неделю. 🌙 Тихий час 22:00–07:00."
-            )
-            if target_chat and target_chat != 0 and chat_type != "dialog" and target_chat != target_uid:
-                await client.send_message(chat_id=target_chat, text=help_text, attachments=keyboard)
-            else:
-                await client.send_message(user_id=target_uid, text=help_text, attachments=keyboard)
-            return
-
-        reply_to_mid = None
-        if "reply_to" in message and message["reply_to"]:
-            rt = message["reply_to"]
-            if isinstance(rt, dict):
-                reply_to_mid = rt.get("id") or rt.get("mid")
-            else:
-                reply_to_mid = str(rt)
-        elif "link" in message and isinstance(message["link"], dict):
-            link = message["link"]
-            reply_to_mid = link.get("id") or link.get("mid")
-            if not reply_to_mid and "message" in link and isinstance(link["message"], dict):
-                reply_to_mid = link["message"].get("mid") or link["message"].get("id")
-
-        if reply_to_mid:
-            await self.handle_reply_message(session, message, client, str(reply_to_mid))
-
-    async def dispatch(
-        self,
-        session: AsyncSession,
-        update: dict[str, Any],
-        client: Optional[MaxBotClient] = None,
-    ) -> None:
-        active_client = client or self.client
-        update_id = update.get("update_id")
-        if update_id and self._mark_seen(self._seen_updates, update_id):
-            return
-
-        msg = update.get("message")
-        if isinstance(msg, dict):
-            mid = msg.get("mid") or msg.get("id") or (msg.get("body") if isinstance(msg.get("body"), dict) else {}).get("mid")
-            if mid and self._mark_seen(self._seen_messages, mid):
-                return
-
-        utype = update.get("update_type")
-        if utype == "message_created":
-            await self.handle_message_created(session, update.get("message", {}), active_client)
-        elif utype == "message_callback":
-            await self.handle_message_callback(session, update.get("callback", {}), active_client)
-        elif utype == "bot_started":
-            await self.handle_bot_started(session, update, active_client)
-
-default_bot_service = BotService()
-
-async def handle_update(
-    arg1: Any = None,
-    arg2: Any = None,
-    *,
-    session: Optional[AsyncSession] = None,
-    update: Optional[dict[str, Any]] = None,
-    client: Optional[MaxBotClient] = None,
-) -> None:
-    target_session: Optional[AsyncSession] = session
-    target_update: Optional[dict[str, Any]] = update
-
-    if isinstance(arg1, AsyncSession):
-        target_session = arg1
-        if isinstance(arg2, dict):
-            target_update = arg2
-    elif isinstance(arg1, dict):
-        target_update = arg1
-        if isinstance(arg2, AsyncSession):
-            target_session = arg2
-
-    if target_update is None:
         return
 
-    active_client = client or get_bot_client()
+    user_mid = str(event.message.body.mid) if event.message and event.message.body else f"msg_{user_id}"
 
-    if target_session is not None:
-        await default_bot_service.dispatch(target_session, target_update, client=active_client)
+    async with async_session_factory() as session:
+        await ensure_user_and_chat(
+            session,
+            user_id=user_id,
+            display_name=user_name,
+            chat_id=chat_id if is_group else None,
+            chat_title=chat_title,
+            owner_id=owner_id,
+            is_group=is_group,
+        )
+
+        q = Question(
+            group_chat_id=chat_id,
+            group_chat_title=chat_title,
+            group_message_id=user_mid,
+            user_message_id=user_mid,
+            author_max_id=user_id,
+            author_name=user_name,
+            text=question_text,
+            status="open",
+        )
+        session.add(q)
+        await session.commit()
+        await session.refresh(q)
+
+        card_text = (
+            f"❓ Вопрос по учёбе #{q.id}\n\n"
+            f"Автор: {user_name}\n"
+            f"Чат: {chat_title}\n\n"
+            f"«{question_text}»\n\n"
+            f"💬 Чтобы помочь, ответьте реплаем (Reply) на это сообщение!"
+        )
+        sent = await event.message.answer(text=card_text)
+        if sent and sent.message and sent.message.body and sent.message.body.mid:
+            q.group_message_id = str(sent.message.body.mid)
+            await session.commit()
+
+        print(f"[БОТ] Вопрос #{q.id} опубликован в чате '{chat_title}' от {user_name}")
+
+async def sync_bot_chats(target_bot: Bot):
+    try:
+        chats_data = await target_bot.get_chats(count=100)
+        if not chats_data or not hasattr(chats_data, "chats") or not chats_data.chats:
+            return
+
+        async with async_session_factory() as session:
+            for c in chats_data.chats:
+                chat_id = str(c.chat_id)
+                chat_type = getattr(c, "type", "") or ""
+                chat_title = getattr(c, "title", None)
+
+                if chat_type in ("dialog", "user") or not chat_title or chat_title.lower() == "диалог":
+                    continue
+
+                owner_id = str(c.owner_id) if getattr(c, "owner_id", None) else None
+
+                res_chat = await session.execute(select(Chat).where(Chat.max_chat_id == chat_id))
+                chat_row = res_chat.scalar_one_or_none()
+                if not chat_row:
+                    chat_row = Chat(max_chat_id=chat_id, title=chat_title, owner_id=owner_id)
+                    session.add(chat_row)
+                else:
+                    chat_row.title = chat_title
+                    if owner_id:
+                        chat_row.owner_id = owner_id
+
+                if owner_id:
+                    res_m = await session.execute(
+                        select(ChatMember).where(ChatMember.chat_max_id == chat_id, ChatMember.user_max_id == owner_id)
+                    )
+                    if not res_m.scalar_one_or_none():
+                        session.add(ChatMember(chat_max_id=chat_id, user_max_id=owner_id, role="teacher"))
+
+                try:
+                    admins_data = await target_bot.get_list_admin_chat(int(chat_id))
+                    if admins_data and hasattr(admins_data, "members") and admins_data.members:
+                        for adm in admins_data.members:
+                            adm_id = str(adm.user_id)
+                            adm_name = f"{adm.first_name or ''} {adm.last_name or ''}".strip() or adm.username or f"Учитель {adm_id}"
+
+                            u_res = await session.execute(select(User).where(User.max_user_id == adm_id))
+                            u_row = u_res.scalar_one_or_none()
+                            if not u_row:
+                                session.add(User(max_user_id=adm_id, display_name=adm_name, role="teacher", balance_spasibki=10, xp=100))
+                            else:
+                                u_row.role = "teacher"
+                                if adm_name and not adm_name.startswith("Учитель "):
+                                    u_row.display_name = adm_name
+
+                            am_res = await session.execute(
+                                select(ChatMember).where(ChatMember.chat_max_id == chat_id, ChatMember.user_max_id == adm_id)
+                            )
+                            if not am_res.scalar_one_or_none():
+                                session.add(ChatMember(chat_max_id=chat_id, user_max_id=adm_id, role="teacher"))
+                            else:
+                                am_row = am_res.scalar_one()
+                                am_row.role = "teacher"
+                except Exception:
+                    pass
+
+            await session.commit()
+            print("[БОТ] Синхронизация чатов и администраторов завершена")
+    except Exception as e:
+        print(f"[БОТ] Синхронизация чатов: {e}")
+
+@dp.message_created()
+async def on_generic_message(event: MessageCreated):
+    if not event.message or not event.message.body:
+        return
+
+    chat_id = str(event.chat.chat_id) if event.chat else ""
+    chat_type = getattr(event.chat, "type", "") or ""
+    chat_title = getattr(event.chat, "title", None)
+    is_group = bool(chat_type in ("chat", "group", "channel") and chat_title and chat_title.lower() != "диалог")
+
+    sender_id = str(event.from_user.user_id) if event.from_user else ""
+    sender_name = extract_display_name(event.from_user)
+    owner_id = str(event.chat.owner_id) if event.chat and getattr(event.chat, "owner_id", None) else None
+
+    if is_group and sender_id:
+        async with async_session_factory() as session:
+            is_owner = bool(owner_id and owner_id == sender_id)
+            await ensure_user_and_chat(
+                session,
+                user_id=sender_id,
+                display_name=sender_name,
+                chat_id=chat_id,
+                chat_title=chat_title,
+                owner_id=owner_id,
+                is_admin=is_owner,
+                is_group=True,
+            )
+
+    raw_text = event.message.body.text or ""
+    if raw_text.startswith("/"):
+        return
+
+    if not event.message.link or not event.message.link.message:
+        return
+
+    parent_mid = event.message.link.message.mid
+    if not parent_mid:
+        return
+
+    helper_id = str(event.from_user.user_id) if event.from_user else ""
+    helper_name = extract_display_name(event.from_user)
+    answer_mid = event.message.body.mid
+
+    async with async_session_factory() as session:
+        res_q = await session.execute(
+            select(Question).where(
+                or_(
+                    Question.group_message_id == parent_mid,
+                    Question.user_message_id == parent_mid,
+                    Question.group_message_id.like(f"%{parent_mid}%"),
+                ),
+                Question.status == "open",
+            )
+        )
+        question = res_q.scalar_one_or_none()
+        if not question:
+            return
+
+        if helper_id == question.author_max_id:
+            await event.message.reply(text="Вы не можете отвечать на свой собственный вопрос.")
+            return
+
+        await ensure_user_and_chat(
+            session,
+            user_id=helper_id,
+            display_name=helper_name,
+            chat_id=chat_id if is_group else None,
+            chat_title=chat_title,
+            is_group=is_group,
+        )
+
+        ans = Answer(
+            question_id=question.id,
+            author_max_id=helper_id,
+            author_name=helper_name,
+            group_message_id=answer_mid,
+            text=raw_text,
+            status="pending",
+        )
+        session.add(ans)
+        await session.commit()
+        await session.refresh(ans)
+
+        print(f"[БОТ] Ответ на вопрос #{question.id} от {helper_name}")
+
+    author_target = int(question.author_max_id) if str(question.author_max_id).isdigit() else None
+    approval_kb = build_approval_keyboard(ans.id)
+    dm_text = (
+        f"Вам ответил(а) {helper_name} на вопрос #{question.id}:\n\n"
+        f"«{raw_text}»\n\n"
+        f"Помогло ли вам это объяснение?"
+    )
+
+    sent_to_author = False
+    if author_target:
+        try:
+            await event.bot.send_message(user_id=author_target, text=dm_text, attachments=[approval_kb.as_markup()])
+            sent_to_author = True
+        except Exception as e:
+            print(f"[БОТ] Не удалось отправить ЛС автору {author_target}: {e}")
+
+    if sent_to_author:
+        await event.message.reply(text=f"Ответ от {helper_name} принят и отправлен автору вопроса в личные сообщения для подтверждения.")
     else:
-        async with async_session_factory() as new_session:
-            await default_bot_service.dispatch(new_session, target_update, client=active_client)
+        await event.message.reply(text=f"Ответ от {helper_name} принят! Автору вопроса нужно открыть диалог с ботом, чтобы подтвердить помощь.")
 
+@dp.message_callback()
+async def on_callback_query(event: MessageCallback):
+    payload = event.callback.payload if event.callback else ""
+    user_id = str(event.callback.user.user_id) if event.callback and event.callback.user else ""
+    user_name = extract_display_name(event.callback.user) if event.callback else "Ученик"
+
+    print(f"[БОТ] Нажата кнопка '{payload}' от {user_name} (ID: {user_id})")
+
+    if payload.startswith("help_accept:"):
+        ans_id = int(payload.split(":")[1])
+        async with async_session_factory() as session:
+            res_ans = await session.execute(select(Answer).where(Answer.id == ans_id))
+            answer = res_ans.scalar_one_or_none()
+            if not answer or answer.status != "pending":
+                if event.callback and event.callback.callback_id:
+                    await event.bot.send_callback(callback_id=event.callback.callback_id, notification="Ответ уже обработан.")
+                return
+
+            res_q = await session.execute(select(Question).where(Question.id == answer.question_id))
+            question = res_q.scalar_one_or_none()
+            if not question or str(question.author_max_id) != str(user_id):
+                if event.callback and event.callback.callback_id:
+                    await event.bot.send_callback(callback_id=event.callback.callback_id, notification="Только автор вопроса может подтвердить помощь.")
+                return
+
+            await GamificationService.award_gratitude(
+                session=session,
+                question=question,
+                answer=answer,
+            )
+
+            print(f"[БОТ] Помощь подтверждена: вопрос #{question.id}, {answer.author_name} получил +50 XP и +1 спасибку")
+
+        try:
+            await event.message.edit(text=f"Помощь принята! {answer.author_name} получил(а) +50 XP и +1 спасибку. Спасибо за взаимовыручку!")
+        except Exception:
+            pass
+
+        try:
+            chat_target = int(question.group_chat_id) if str(question.group_chat_id).isdigit() else question.group_chat_id
+            celeb_text = (
+                f"🎉 Вопрос #{question.id} успешно решён!\n\n"
+                f"Помог(ла): {answer.author_name} (+50 XP, +1 спасибка)\n"
+                f"Автор {question.author_name} поблагодарил(а) за помощь."
+            )
+            await event.bot.send_message(chat_id=chat_target, text=celeb_text)
+        except Exception:
+            pass
+
+        if event.callback and event.callback.callback_id:
+            await event.bot.send_callback(callback_id=event.callback.callback_id, notification="Помощь принята!")
+        return
+
+    if payload.startswith("help_reject:"):
+        ans_id = int(payload.split(":")[1])
+        async with async_session_factory() as session:
+            res_ans = await session.execute(select(Answer).where(Answer.id == ans_id))
+            answer = res_ans.scalar_one_or_none()
+            if answer:
+                answer.status = "rejected"
+                await session.commit()
+
+        try:
+            await event.message.edit(text="Ответ отклонён. Вопрос остаётся открытым для других участников.")
+        except Exception:
+            pass
+
+        if event.callback and event.callback.callback_id:
+            await event.bot.send_callback(callback_id=event.callback.callback_id, notification="Ответ отклонён")
+        return
+
+    kb = build_main_menu_keyboard()
+
+    if payload == "menu:ask_info":
+        info_text = (
+            f"Как задать вопрос классу:\n\n"
+            f"1. Откройте чат вашей учебной группы.\n"
+            f"2. Отправьте сообщение:\n/ask <текст вопроса>\n\n"
+            f"Бот создаст карточку с вопросом. Одноклассники смогут ответить реплаем, а вы отметите лучший ответ."
+        )
+        try:
+            await event.message.edit(text=info_text, attachments=[kb.as_markup()])
+        except Exception:
+            pass
+
+    elif payload == "menu:profile":
+        async with async_session_factory() as session:
+            res_user = await session.execute(select(User).where(User.max_user_id == user_id))
+            u = res_user.scalar_one_or_none()
+            rank_name = u.rank if u else "Любитель"
+            xp_val = u.xp if u else 0
+            coins_val = u.balance_spasibki if u else 0
+            role_title = "Учитель" if (u and u.role == "teacher") else "Ученик"
+
+        profile_text = (
+            f"Личный профиль:\n\n"
+            f"Имя: {user_name}\n"
+            f"Статус: {role_title}\n"
+            f"Звание: {rank_name}\n"
+            f"Опыт: {xp_val} XP\n"
+            f"Баланс: {coins_val} спасибок\n\n"
+            f"Используйте команды и кнопки для навигации."
+        )
+        try:
+            await event.message.edit(text=profile_text, attachments=[kb.as_markup()])
+        except Exception:
+            pass
+
+    elif payload == "menu:top":
+        async with async_session_factory() as session:
+            leaders_res = await session.execute(
+                select(User).where(User.role == "student").order_by(User.xp.desc()).limit(5)
+            )
+            leaders = leaders_res.scalars().all()
+
+        lines = ["Топ помощников:\n"]
+        if not leaders:
+            lines.append("Пока нет участников с начисленными баллами.")
+        else:
+            for idx, leader in enumerate(leaders, 1):
+                lines.append(f"{idx}. {leader.display_name} — {leader.xp} XP ({leader.balance_spasibki} спасибок)")
+
+        top_text = "\n".join(lines)
+        try:
+            await event.message.edit(text=top_text, attachments=[kb.as_markup()])
+        except Exception:
+            pass
+
+    elif payload == "menu:shop":
+        async with async_session_factory() as session:
+            rewards_res = await session.execute(
+                select(Reward).where(Reward.is_active == True).order_by(Reward.cost_spasibki.asc()).limit(5)
+            )
+            rewards = rewards_res.scalars().all()
+
+        lines = ["Доступные награды в лавке:\n"]
+        for r in rewards:
+            lines.append(f"• {r.title} — {r.cost_spasibki} спасибок")
+
+        shop_text = "\n".join(lines)
+        try:
+            await event.message.edit(text=shop_text, attachments=[kb.as_markup()])
+        except Exception:
+            pass
+
+    elif payload == "menu:teacher":
+        teacher_text = (
+            f"Кабинет учителя\n\n"
+            f"Педагоги могут создавать школьные награды, одобрять запросы школьников и вручать бейдж «Выбор учителя»."
+        )
+        try:
+            await event.message.edit(text=teacher_text, attachments=[kb.as_markup()])
+        except Exception:
+            pass
+
+    if event.callback and event.callback.callback_id:
+        try:
+            await event.bot.send_callback(callback_id=event.callback.callback_id)
+        except Exception:
+            pass

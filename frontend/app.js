@@ -1,974 +1,660 @@
-/**
- * ЛИГА ПОМОЩНИКОВ — WebApp Frontend
- * Features: Dark/Light Mode, Multi-Class Switcher, Podium Leaderboard (Top 3), Reward Limits, Confetti
- * No emojis, Material Symbols icons
- */
-
-let currentUserId = 1001;
+let currentUserId = "";
+let currentUserDisplayName = "";
 let currentUserData = null;
-let activeClassChatId = null;
-let activeClassTitle = "Класс";
-let userClasses = [];
-let gigachatHistory = [];
+let availableChats = [];
+let selectedChatId = "all";
+let selectedChatTitle = "Учебный класс";
+let currentLeaderboardPeriod = "all_time";
+let currentLeaderboardScope = "class";
+let teacherSelectedChatId = "all";
 
 document.addEventListener("DOMContentLoaded", () => {
   initTheme();
   initUserFromMAX();
-  loadInitialData();
+  loadProfile();
 });
 
-/* ============================================================
-   THEME (DARK / LIGHT MODE)
-   ============================================================ */
-
 function initTheme() {
-  const savedTheme = localStorage.getItem("liga_theme");
-  let theme = "dark";
-  if (savedTheme) {
-    theme = savedTheme;
-  } else if (window.WebApp?.colorScheme) {
-    theme = window.WebApp.colorScheme;
-  } else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) {
-    theme = "light";
-  }
-  applyTheme(theme);
-}
-
-function applyTheme(theme) {
-  document.documentElement.setAttribute("data-theme", theme);
-  localStorage.setItem("liga_theme", theme);
-  const icon = document.getElementById("theme-icon");
-  if (icon) {
-    icon.textContent = theme === "dark" ? "light_mode" : "dark_mode";
+  localStorage.removeItem("sferum_theme");
+  const savedTheme = localStorage.getItem("sferum_theme_v3");
+  if (savedTheme === "dark") {
+    applyTheme("dark");
+  } else {
+    applyTheme("light");
   }
 }
 
 function toggleTheme() {
-  const current = document.documentElement.getAttribute("data-theme") || "dark";
-  const next = current === "dark" ? "light" : "dark";
+  const current = document.documentElement.getAttribute("data-theme") || "light";
+  const next = current === "light" ? "dark" : "light";
   applyTheme(next);
+  localStorage.setItem("sferum_theme_v3", next);
 }
 
-/* ============================================================
-   USER & APP INITIALIZATION
-   ============================================================ */
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  const sunIcon = document.getElementById("theme-icon-sun");
+  const moonIcon = document.getElementById("theme-icon-moon");
+  if (sunIcon && moonIcon) {
+    if (theme === "dark") {
+      sunIcon.classList.remove("hidden");
+      moonIcon.classList.add("hidden");
+    } else {
+      sunIcon.classList.add("hidden");
+      moonIcon.classList.remove("hidden");
+    }
+  }
 }
 
-function initials(name) {
-  const parts = String(name || "?").trim().split(/\s+/);
-  return ((parts[0]?.[0] || "?") + (parts[1]?.[0] || "")).toUpperCase();
-}
-
-function sanitizeIcon(icon) {
-  const map = {
-    "assignment": "assignment",
-    "chair": "chair",
-    "task_alt": "task_alt",
-    "lightbulb": "lightbulb",
-    "local_cafe": "local_cafe",
-    "star": "star",
-    "📝": "assignment",
-    "🪑": "chair",
-    "🎯": "task_alt",
-    "💡": "lightbulb",
-    "☕️": "local_cafe",
-    "☕": "local_cafe",
-    "⭐": "star",
-    "⭐️": "star",
-    "🎁": "card_giftcard"
-  };
-  return map[icon] || "card_giftcard";
-}
-
-function initUserFromMAX() {
+async function initUserFromMAX() {
   const urlParams = new URLSearchParams(window.location.search);
   const urlUserId = urlParams.get("user_id");
-  if (window.WebApp?.initDataUnsafe?.user) {
-    currentUserId = window.WebApp.initDataUnsafe.user.id;
+
+  if (window.WebApp && window.WebApp.initDataUnsafe && window.WebApp.initDataUnsafe.user) {
+    const maxUser = window.WebApp.initDataUnsafe.user;
+    currentUserId = String(maxUser.id);
+
+    const fName = maxUser.first_name || "";
+    const lName = maxUser.last_name || "";
+    const builtName = `${fName} ${lName}`.trim() || maxUser.username || "";
+    if (builtName) {
+      currentUserDisplayName = builtName;
+      syncUserWithBackend(maxUser.id, fName, lName, maxUser.username);
+    }
+
     const demoBar = document.getElementById("demo-bar");
     if (demoBar) demoBar.style.display = "none";
   } else if (urlUserId) {
-    currentUserId = parseInt(urlUserId, 10);
+    currentUserId = String(urlUserId);
     const demoSelect = document.getElementById("demo-user-select");
-    if (demoSelect) demoSelect.value = String(currentUserId);
+    if (demoSelect) demoSelect.value = currentUserId;
   }
 }
 
-async function loadInitialData() {
-  await loadUserClasses();
-  await loadProfile();
-  loadLeaderboard();
+async function syncUserWithBackend(userId, firstName, lastName, username) {
+  try {
+    await fetch("/api/sync-user", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: String(userId),
+        first_name: firstName,
+        last_name: lastName,
+        username: username,
+      }),
+    });
+  } catch (err) {}
 }
 
 function switchDemoUser(newUserId) {
-  currentUserId = parseInt(newUserId, 10);
-  showToast("Переключён пользователь");
-  loadUserClasses().then(() => {
-    loadProfile();
-    const active = document.querySelector(".tab-pane.active");
-    if (active?.id === "tab-leaderboard") loadLeaderboard();
-    if (active?.id === "tab-rewards") loadRewards();
-    if (active?.id === "tab-achievements") loadAchievements();
-    if (active?.id === "tab-teacher") loadTeacherData();
-    if (active?.id === "tab-gigachat") {
-      const msgs = document.getElementById("gigachat-messages");
-      if (msgs) msgs.scrollTop = msgs.scrollHeight;
-    }
-  });
+  currentUserId = String(newUserId);
+  currentUserDisplayName = "";
+  showToast("Выбран профиль: " + currentUserId);
+  loadProfile();
+  refreshActiveTab();
 }
 
-/* ============================================================
-   MULTI-CLASS SWITCHER (ВЫБОР РАЗНЫХ ЧАТОВ)
-   ============================================================ */
+function refreshActiveTab() {
+  const activeTab = document.querySelector(".tab-pane.active");
+  if (!activeTab) return;
+  const tabId = activeTab.id.replace("tab-", "");
+  if (tabId === "leaderboard") loadLeaderboard();
+  if (tabId === "achievements") loadAchievements();
+  if (tabId === "rewards") loadRewards();
+  if (tabId === "teacher") loadTeacherData();
+}
 
-async function loadUserClasses() {
+function getInitials(name) {
+  if (!name) return "УЧ";
+  const parts = name.trim().split(/\s+/);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[1][0]).toUpperCase();
+  }
+  return name.slice(0, 2).toUpperCase();
+}
+
+async function loadProfile() {
   try {
-    const res = await fetch(`/api/user/classes?user_id=${currentUserId}`);
-    if (res.ok) {
-      const data = await res.json();
-      userClasses = data.classes || [];
-      if (userClasses.length > 0) {
-        if (!activeClassChatId || !userClasses.find(c => c.chat_id === activeClassChatId)) {
-          const activeClass = userClasses.find(c => c.chat_id === data.active_class_chat_id) || userClasses[0];
-          activeClassChatId = activeClass.chat_id;
-          activeClassTitle = activeClass.title || "Чат класса";
-        }
-      }
+    let url = `/api/profile?user_id=${encodeURIComponent(currentUserId)}`;
+    if (selectedChatId && selectedChatId !== "all") {
+      url += `&chat_id=${encodeURIComponent(selectedChatId)}`;
     }
+    if (currentUserDisplayName) {
+      url += `&display_name=${encodeURIComponent(currentUserDisplayName)}`;
+    }
+
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("Profile error");
+    const data = await res.json();
+    currentUserData = data;
+    if (data.max_user_id) {
+      currentUserId = String(data.max_user_id);
+    }
+
+    document.getElementById("header-name").textContent = data.display_name;
+    const roleElem = document.getElementById("header-role");
+    if (data.role === "teacher") {
+      roleElem.textContent = "Учитель";
+      roleElem.classList.add("teacher");
+    } else {
+      roleElem.textContent = "Ученик";
+      roleElem.classList.remove("teacher");
+    }
+
+    document.getElementById("header-coins").textContent = data.balance_spasibki;
+    document.getElementById("header-avatar").textContent = getInitials(data.display_name);
+
+    document.getElementById("profile-level-title").textContent = data.rank;
+    document.getElementById("profile-level-num").textContent = `${data.level} уровень`;
+
+    const xpInLevel = data.xp % 100;
+    document.getElementById("profile-xp-text").textContent = `${xpInLevel} / 100 XP (${data.xp} всего)`;
+    document.getElementById("profile-xp-fill").style.width = `${Math.min(100, xpInLevel)}%`;
+
+    document.getElementById("profile-helped").textContent = data.helped_count || 0;
+    document.getElementById("profile-questions").textContent = data.questions_count || 0;
+    document.getElementById("profile-rank").textContent = `#${data.rank_position || 1}`;
+
+    const shopCoins = document.getElementById("shop-coins");
+    if (shopCoins) shopCoins.textContent = data.balance_spasibki;
+
+    if (data.chats && data.chats.length > 0) {
+      availableChats = data.chats.filter(c => c.title && c.title.toLowerCase() !== "диалог");
+      if (selectedChatId === "all" || !availableChats.some(c => c.id === selectedChatId)) {
+        selectedChatId = availableChats[0].id;
+        selectedChatTitle = availableChats[0].title;
+      }
+    } else {
+      availableChats = [{ id: "my_class", title: "Мой учебный класс", role: data.role }];
+      selectedChatId = "my_class";
+      selectedChatTitle = "Мой учебный класс";
+    }
+
+    const teacherNavBtn = document.getElementById("nav-teacher-btn");
+    const hasTeacherRole = (data.role === "teacher" || availableChats.some(c => c.role === "teacher"));
+    if (teacherNavBtn) {
+      teacherNavBtn.style.display = hasTeacherRole ? "flex" : "none";
+    }
+
+    updateClassSelectorUI();
+    populateTeacherClassDropdowns();
+
   } catch (err) {
-    console.error("Classes load failed", err);
-  }
-  updateClassTitleDisplay();
-}
-
-function updateClassTitleDisplay() {
-  const titleEl = document.getElementById("active-class-title");
-  if (titleEl) {
-    titleEl.textContent = activeClassTitle || "Класс не выбран";
+    showToast("Не удалось обновить профиль");
   }
 }
 
-function openClassPicker() {
-  const container = document.getElementById("class-list-container");
-  if (!container) return;
-
-  if (!userClasses.length) {
-    container.innerHTML = '<p class="empty-hint">Вы пока не состоите в учебных чатах бота.</p>';
-  } else {
-    container.innerHTML = userClasses.map(c => `
-      <div class="class-item ${c.chat_id === activeClassChatId ? "active" : ""}" onclick="selectClass('${c.chat_id}', '${escapeHtml(c.title)}')">
-        <div>
-          <div class="class-item-title">${escapeHtml(c.title)}</div>
-          <div class="class-item-sub">ID: ${escapeHtml(c.chat_id)}</div>
-        </div>
-        ${c.chat_id === activeClassChatId ? '<span class="material-symbols-outlined" style="color: var(--sf-purple);">check</span>' : ""}
-      </div>
-    `).join("");
+function updateClassSelectorUI() {
+  const label = document.getElementById("current-class-label");
+  if (label) {
+    label.textContent = selectedChatTitle;
   }
+}
 
+function openClassModal() {
   const modal = document.getElementById("class-modal");
-  if (modal) modal.classList.remove("hidden");
+  const list = document.getElementById("sheet-classes-list");
+  if (!modal || !list) return;
+
+  const validChats = availableChats.filter(c => c.title && c.title.toLowerCase() !== "диалог");
+
+  list.innerHTML = validChats.map(c => `
+    <div class="class-option-card ${c.id === selectedChatId ? 'selected' : ''}" onclick="selectClass('${c.id}', '${escapeHtml(c.title)}')">
+      <div>
+        <div class="class-option-name">${escapeHtml(c.title)}</div>
+        <div class="class-option-role">${c.role === 'teacher' ? 'Преподаватель' : 'Ученик'}</div>
+      </div>
+      <div>${c.id === selectedChatId ? '✓' : ''}</div>
+    </div>
+  `).join("");
+
+  modal.classList.remove("hidden");
 }
 
-function closeClassPicker(e) {
-  if (e && e.target && e.target.closest(".modal-card") && !e.target.classList.contains("btn-close")) {
+function closeClassModal(e) {
+  if (e && e.target && e.target.closest && e.target.closest(".modal-sheet") && !e.target.classList.contains("sheet-close")) {
     return;
   }
   const modal = document.getElementById("class-modal");
   if (modal) modal.classList.add("hidden");
 }
 
-function selectClass(chatId, title) {
-  activeClassChatId = chatId;
-  activeClassTitle = title;
-  updateClassTitleDisplay();
-  closeClassPicker();
-  showToast(`Выбран класс: ${title}`);
-  
+function selectClass(chatId, chatTitle) {
+  selectedChatId = chatId;
+  selectedChatTitle = chatTitle;
+
+  const chatObj = availableChats.find(c => c.id === chatId);
+  if (chatObj) {
+    const roleElem = document.getElementById("header-role");
+    if (roleElem) {
+      if (chatObj.role === "teacher") {
+        roleElem.textContent = "Учитель";
+        roleElem.classList.add("teacher");
+      } else {
+        roleElem.textContent = "Ученик";
+        roleElem.classList.remove("teacher");
+      }
+    }
+  }
+
+  updateClassSelectorUI();
+  closeClassModal();
+  showToast("Выбран класс: " + chatTitle);
   loadProfile();
-  const active = document.querySelector(".tab-pane.active");
-  if (active?.id === "tab-leaderboard") loadLeaderboard();
-  if (active?.id === "tab-rewards") loadRewards();
-  if (active?.id === "tab-achievements") loadAchievements();
-  if (active?.id === "tab-teacher") loadTeacherData();
-  if (active?.id === "tab-gigachat") {
-    const msgs = document.getElementById("gigachat-messages");
-    if (msgs) msgs.scrollTop = msgs.scrollHeight;
+  refreshActiveTab();
+}
+
+function populateTeacherClassDropdowns() {
+  const selectElem = document.getElementById("teacher-class-select");
+  const rewSelectElem = document.getElementById("rew-chat-select");
+
+  let options = '<option value="all">Все классы</option>';
+  options += availableChats.map(c => `<option value="${c.id}">${escapeHtml(c.title)}</option>`).join("");
+
+  if (selectElem) {
+    selectElem.innerHTML = options;
+    selectElem.value = teacherSelectedChatId;
+  }
+  if (rewSelectElem) {
+    rewSelectElem.innerHTML = options;
   }
 }
 
-/* ============================================================
-   NAVIGATION & TABS
-   ============================================================ */
+function onTeacherClassChange(chatId) {
+  teacherSelectedChatId = chatId;
+  loadTeacherData();
+}
 
 function switchTab(tabName, btnElement) {
-  document.querySelectorAll(".tab-pane").forEach((pane) => pane.classList.remove("active"));
-  document.getElementById(`tab-${tabName}`)?.classList.add("active");
+  document.querySelectorAll(".tab-pane").forEach(pane => pane.classList.remove("active"));
+  const target = document.getElementById(`tab-${tabName}`);
+  if (target) target.classList.add("active");
 
-  document.querySelectorAll(".rail-btn, .nav-item").forEach((item) => {
-    item.classList.toggle("active", item.dataset.tab === tabName);
-  });
+  document.querySelectorAll(".tab-item").forEach(item => item.classList.remove("active"));
   if (btnElement) btnElement.classList.add("active");
 
-  window.scrollTo({ top: 0, behavior: "smooth" });
-
-  if (tabName === "leaderboard") loadLeaderboard();
-  if (tabName === "rewards") loadRewards();
-  if (tabName === "gigachat") {
-    setTimeout(() => {
-      const msgs = document.getElementById("gigachat-messages");
-      if (msgs) msgs.scrollTop = msgs.scrollHeight;
-      document.getElementById("gigachat-input")?.focus();
-    }, 100);
-  }
-  if (tabName === "achievements") loadAchievements();
   if (tabName === "profile") loadProfile();
+  if (tabName === "leaderboard") loadLeaderboard();
+  if (tabName === "achievements") loadAchievements();
+  if (tabName === "rewards") loadRewards();
   if (tabName === "teacher") loadTeacherData();
 }
 
-/* ============================================================
-   PROFILE
-   ============================================================ */
-
-async function loadProfile() {
-  try {
-    const url = `/api/profile?user_id=${currentUserId}${activeClassChatId ? `&class_id=${activeClassChatId}` : ""}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error("profile");
-    const data = await res.json();
-    currentUserData = data;
-    const isTeacher = data.role === "teacher";
-
-    // Header
-    document.getElementById("header-name").textContent = data.name;
-    document.getElementById("header-role").textContent = isTeacher ? "Учитель" : "Ученик";
-    document.getElementById("header-coins").textContent = data.coins;
-    document.getElementById("header-avatar").textContent = initials(data.name);
-
-    // Profile Tab
-    document.getElementById("profile-avatar").textContent = initials(data.name);
-    document.getElementById("profile-name").textContent = data.name;
-    document.getElementById("profile-level-title").textContent = data.level.title;
-    document.getElementById("profile-level-num").textContent = `${data.level.level} ур.`;
-    document.getElementById("profile-xp-text").textContent = `${data.level.current_xp} / ${data.level.next_xp} XP`;
-    document.getElementById("profile-xp-fill").style.width = `${data.level.progress_percent}%`;
-    document.getElementById("profile-helped").textContent = data.helped_count;
-    document.getElementById("profile-questions").textContent = data.questions_count;
-
-    const streakEl = document.getElementById("profile-streak");
-    if (streakEl) streakEl.textContent = `${data.help_streak || 0} дн.`;
-
-    document.getElementById("profile-rank").textContent = `#${data.rank}`;
-
-    // Exam / Night banners
-    const examBanner = document.getElementById("exam-banner");
-    if (examBanner) {
-      examBanner.classList.toggle("hidden", !data.exam_mode);
-      examBanner.textContent = data.exam_label || "";
-    }
-
-    const night = document.getElementById("night-hint");
-    const pending = data.pending_xp || data.pending_coins;
-    if (night) {
-      night.classList.toggle("hidden", !(data.night_mode || pending));
-      const nightText = night.querySelector("span:last-child");
-      if (nightText) {
-        if (pending) {
-          nightText.textContent = `Отложено до утра: ${data.pending_xp} XP и ${data.pending_coins} спасибок`;
-        } else if (data.night_mode) {
-          nightText.textContent = "Тихий час: опыт за ночную помощь начислится утром в 07:00.";
-        }
-      }
-    }
-
-    // Shop
-    const shopCoins = document.getElementById("shop-coins");
-    if (shopCoins) shopCoins.textContent = data.coins;
-
-    // Parent link
-    const parentLink = document.getElementById("parent-link");
-    if (parentLink) parentLink.value = data.report_url || "";
-
-    // Teacher nav visibility
-    const railTeacher = document.getElementById("nav-teacher-btn");
-    if (railTeacher) railTeacher.style.display = isTeacher ? "flex" : "none";
-    const mobileTeacher = document.getElementById("nav-teacher-btn-mobile");
-    if (mobileTeacher) mobileTeacher.style.display = isTeacher ? "flex" : "none";
-
-  } catch (err) {
-    console.error(err);
-    showToast("Не удалось загрузить профиль");
-  }
+function setLeaderboardScope(scope) {
+  currentLeaderboardScope = scope;
+  document.getElementById("scope-class-btn").classList.toggle("active", scope === "class");
+  document.getElementById("scope-school-btn").classList.toggle("active", scope === "school");
+  loadLeaderboard();
 }
 
-/* ============================================================
-   LEADERBOARD (ПЬЕДЕСТАЛ ТОП-3 + СТОЛБИК НИЖЕ)
-   ============================================================ */
+function changeLeaderboardPeriod(period) {
+  currentLeaderboardPeriod = period;
+  document.getElementById("btn-period-all").classList.toggle("active", period === "all_time");
+  document.getElementById("btn-period-week").classList.toggle("active", period === "weekly");
+  loadLeaderboard();
+}
 
 async function loadLeaderboard() {
   const container = document.getElementById("leaderboard-container");
-  const podiumEl = document.getElementById("podium-container");
-  if (!container) return;
-  container.innerHTML = '<div class="loading-spinner">Загрузка рейтинга…</div>';
+  container.innerHTML = '<div class="state-loading">Загрузка рейтинга...</div>';
 
   try {
-    const url = `/api/leaderboard?user_id=${currentUserId}${activeClassChatId ? `&class_id=${activeClassChatId}` : ""}`;
-    const leaders = await (await fetch(url)).json();
-    if (!leaders || !leaders.length) {
-      container.innerHTML = '<p class="empty-hint">Пока нет участников в рейтинге.</p>';
-      if (podiumEl) podiumEl.innerHTML = "";
+    let url = `/api/leaderboard?period=${currentLeaderboardPeriod}`;
+    if (currentLeaderboardScope === "class" && selectedChatId && selectedChatId !== "all") {
+      url += `&chat_id=${selectedChatId}`;
+    } else {
+      url += `&chat_id=all`;
+    }
+
+    const res = await fetch(url);
+    const data = await res.json();
+    const leaders = data.items || [];
+
+    if (!leaders.length) {
+      container.innerHTML = '<p class="empty-state-text">В этом рейтинге пока нет участников.</p>';
       return;
     }
 
-    // Current user rank banner update
-    const cur = leaders.find(l => String(l.max_user_id) === String(currentUserId));
-    if (cur) {
-      document.getElementById("my-rank-title").textContent = `Ваша позиция: #${cur.rank} · ${cur.name}`;
-      document.getElementById("my-rank-sub").textContent = `${cur.level_title} · помог ${cur.helped_count} раз · серия ${cur.help_streak || 0} дн.`;
-      document.getElementById("my-rank-xp").textContent = `${cur.xp} XP`;
-    }
+    container.innerHTML = leaders.map(item => {
+      let rankText = `#${item.rank_position}`;
+      let topClass = "";
+      if (item.rank_position === 1) topClass = "top-1";
+      if (item.rank_position === 2) topClass = "top-2";
+      if (item.rank_position === 3) topClass = "top-3";
 
-    // 1. RENDER PODIUM (ТОЛЬКО ТОП-3 МЕСТА)
-    const top3 = leaders.slice(0, 3);
-    if (podiumEl) {
-      const p1 = top3[0];
-      const p2 = top3[1];
-      const p3 = top3[2];
+      const isCurrent = String(item.max_user_id) === String(currentUserId);
+      const initials = getInitials(item.display_name);
 
-      const col2 = p2 ? `
-        <div class="podium-col rank-2">
-          <span class="avatar">${escapeHtml(initials(p2.name))}</span>
-          <div class="podium-name">${escapeHtml(p2.name)}</div>
-          <div class="podium-xp">${p2.xp} XP</div>
-          <div class="podium-pedestal">
-            <span class="podium-step-num">2</span>
+      return `
+        <div class="leader-card ${isCurrent ? 'current-user' : ''}">
+          <div class="leader-rank-col ${topClass}">${rankText}</div>
+          <div class="leader-avatar">${initials}</div>
+          <div class="leader-details">
+            <div class="leader-name">${escapeHtml(item.display_name)}</div>
+            <div class="leader-meta">${escapeHtml(item.rank)}</div>
+          </div>
+          <div class="leader-score">
+            <div class="leader-xp-val">${item.xp} XP</div>
+            <div class="leader-coins-val">${item.balance_spasibki} спасибок</div>
           </div>
         </div>
-      ` : '<div class="podium-col"></div>';
-
-      const col1 = p1 ? `
-        <div class="podium-col rank-1">
-          <span class="avatar">${escapeHtml(initials(p1.name))}</span>
-          <div class="podium-name">${escapeHtml(p1.name)}</div>
-          <div class="podium-xp">${p1.xp} XP</div>
-          <div class="podium-pedestal">
-            <span class="material-symbols-outlined podium-badge-icon" style="color: var(--sf-gold);">workspace_premium</span>
-            <span class="podium-step-num">1</span>
-          </div>
-        </div>
-      ` : '<div class="podium-col"></div>';
-
-      const col3 = p3 ? `
-        <div class="podium-col rank-3">
-          <span class="avatar">${escapeHtml(initials(p3.name))}</span>
-          <div class="podium-name">${escapeHtml(p3.name)}</div>
-          <div class="podium-xp">${p3.xp} XP</div>
-          <div class="podium-pedestal">
-            <span class="podium-step-num">3</span>
-          </div>
-        </div>
-      ` : '<div class="podium-col"></div>';
-
-      podiumEl.innerHTML = `${col2}${col1}${col3}`;
-    }
-
-    // 2. RENDER REMAINING PLACES (МЕСТА 4 И ДАЛЕЕ В СТОЛБИК)
-    const rest = leaders.slice(3);
-    if (!rest.length) {
-      container.innerHTML = '<p class="empty-hint">Первые три места заняли пьедестал выше.</p>';
-    } else {
-      container.innerHTML = rest.map((item) => {
-        const isCurrent = String(item.max_user_id) === String(currentUserId);
-        return `
-          <div class="leader-item ${isCurrent ? "current-user" : ""}">
-            <div class="leader-rank">${item.rank}</div>
-            <span class="avatar">${escapeHtml(initials(item.name))}</span>
-            <div class="leader-info">
-              <div class="leader-name">${escapeHtml(item.name)}${isCurrent ? " (Вы)" : ""}</div>
-              <div class="leader-sub">${escapeHtml(item.level_title)} · помог ${item.helped_count} · серия ${item.help_streak || 0} дн.</div>
-            </div>
-            <div class="leader-xp">${item.xp} XP</div>
-          </div>
-        `;
-      }).join("");
-    }
+      `;
+    }).join("");
 
   } catch (err) {
-    container.innerHTML = '<p class="empty-hint">Ошибка загрузки рейтинга.</p>';
+    container.innerHTML = '<p class="empty-state-text">Не удалось загрузить рейтинг</p>';
   }
 }
 
 async function loadAchievements() {
   const container = document.getElementById("achievements-container");
-  if (!container) return;
-  container.innerHTML = '<div class="loading-spinner">Загрузка достижений…</div>';
+  container.innerHTML = '<div class="state-loading">Загрузка достижений...</div>';
+
   try {
-    const achievements = await (await fetch(`/api/achievements?user_id=${currentUserId}`)).json();
-    container.innerHTML = achievements.map((ach) => `
-      <div class="ach-card ${ach.is_unlocked ? "unlocked" : "locked"}">
-        <span class="material-symbols-outlined ach-icon">military_tech</span>
-        <div class="ach-title">${escapeHtml(ach.title)}</div>
-        <div class="ach-desc">${escapeHtml(ach.description)}</div>
-        <div class="ach-reward-tag">+${ach.xp_reward} XP · +${ach.coins_reward} спасибок</div>
-        <div class="muted" style="margin-top: 6px; font-size: 11px;">
-          ${ach.is_unlocked ? "Открыто " + escapeHtml(ach.unlocked_at) : "Закрыто"}
+    const res = await fetch(`/api/achievements?user_id=${currentUserId}`);
+    const achievements = await res.json();
+
+    if (!achievements.length) {
+      container.innerHTML = '<p class="empty-state-text">Достижения не найдены.</p>';
+      return;
+    }
+
+    container.innerHTML = achievements.map(ach => {
+      const isUnlocked = ach.unlocked;
+      let statusTag = "";
+      if (isUnlocked && ach.awarded_at) {
+        const d = new Date(ach.awarded_at);
+        statusTag = `<span class="ach-tag tag-unlocked">Получено ${d.toLocaleDateString('ru-RU')}</span>`;
+      } else if (isUnlocked) {
+        statusTag = `<span class="ach-tag tag-unlocked">Получено</span>`;
+      } else {
+        statusTag = `<span class="ach-tag tag-locked">Не открыто</span>`;
+      }
+
+      return `
+        <div class="ach-item-card ${isUnlocked ? 'unlocked' : 'locked'}">
+          <div class="ach-icon-circle">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="8" r="7"/>
+              <polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88"/>
+            </svg>
+          </div>
+          <div class="ach-title">${escapeHtml(ach.name_ru)}</div>
+          <div class="ach-desc">${escapeHtml(ach.description_ru)}</div>
+          ${statusTag}
         </div>
-      </div>
-    `).join("");
+      `;
+    }).join("");
+
   } catch (err) {
-    container.innerHTML = '<p class="empty-hint">Ошибка загрузки достижений.</p>';
+    container.innerHTML = '<p class="empty-state-text">Не удалось загрузить список наград</p>';
   }
 }
-
-/* ============================================================
-   REWARDS SHOP (С ЛИМИТАМИ И КОНФЕТТИ)
-   ============================================================ */
 
 async function loadRewards() {
-  const grid = document.getElementById("rewards-container");
-  const requestsList = document.getElementById("my-requests-list");
-  if (!grid) return;
-  grid.innerHTML = '<div class="loading-spinner">Загрузка лавки…</div>';
+  const container = document.getElementById("rewards-container");
+  container.innerHTML = '<div class="state-loading">Загрузка лавки...</div>';
 
   try {
-    const url = `/api/rewards?user_id=${currentUserId}${activeClassChatId ? `&class_id=${activeClassChatId}` : ""}`;
-    const data = await (await fetch(url)).json();
-    document.getElementById("shop-coins").textContent = data.user_coins;
-
-    const lockEl = document.getElementById("shop-lock");
-    if (lockEl) {
-      lockEl.classList.toggle("hidden", !data.shop_locked);
-      lockEl.textContent = data.shop_message || "";
+    let url = "/api/rewards";
+    if (selectedChatId && selectedChatId !== "all") {
+      url += `?chat_id=${selectedChatId}`;
     }
 
-    if (!data.rewards || !data.rewards.length) {
-      grid.innerHTML = '<p class="empty-hint">Учитель пока не добавил награды в лавку этого класса.</p>';
+    const res = await fetch(url);
+    const rewards = await res.json();
+
+    if (!rewards.length) {
+      container.innerHTML = '<p class="empty-state-text">В лавке пока нет доступных наград.</p>';
     } else {
-      grid.innerHTML = data.rewards.map((rew) => {
-        const isLimitReached = !!rew.is_limit_reached;
-        const isOutOfStock = rew.stock !== null && rew.stock !== undefined && rew.stock <= 0;
-        const canAfford = !data.shop_locked && data.user_coins >= rew.price_coins;
-        const diff = rew.price_coins - data.user_coins;
-
-        let btnDisabled = false;
-        let btnText = `Купить за ${rew.price_coins} спасибок`;
-
-        if (data.shop_locked) {
-          btnDisabled = true;
-          btnText = "Лавка закрыта";
-        } else if (isLimitReached) {
-          btnDisabled = true;
-          btnText = "Лимит исчерпан";
-        } else if (isOutOfStock) {
-          btnDisabled = true;
-          btnText = "Закончились";
-        } else if (!canAfford) {
-          btnDisabled = true;
-          btnText = `Нужно ещё ${diff} спасибок`;
-        }
-
-        const limitBadge = rew.max_per_student 
-          ? `<span class="limit-badge ${isLimitReached ? "limit-reached" : ""}">Лимит: ${rew.user_claims_count || 0}/${rew.max_per_student} на ученика</span>`
-          : "";
-        const stockBadge = (rew.stock !== null && rew.stock !== undefined)
-          ? `<span class="limit-badge ${isOutOfStock ? "limit-reached" : ""}">Осталось: ${rew.stock} шт.</span>`
-          : "";
-
-        const iconSymbol = sanitizeIcon(rew.icon);
-
-        return `
-          <div class="reward-card">
-            <div style="display: flex; gap: 12px; align-items: flex-start;">
-              <div class="reward-icon-box">
-                <span class="material-symbols-outlined">${iconSymbol}</span>
-              </div>
-              <div class="reward-details">
-                <div style="font-weight: 700; font-size: 15px;">${escapeHtml(rew.title)}</div>
-                <div class="reward-desc">${escapeHtml(rew.description)}</div>
-                <div class="reward-limits-row">
-                  ${limitBadge}
-                  ${stockBadge}
-                </div>
-              </div>
-            </div>
-            <button class="btn btn-gold" ${btnDisabled ? "disabled" : ""} onclick="handleBuyReward(${rew.id})" style="margin-top: 10px; width: 100%;">
-              ${btnText}
-            </button>
+      container.innerHTML = rewards.map(r => `
+        <div class="reward-card-item">
+          <div class="reward-main-col">
+            <div class="reward-item-title">${escapeHtml(r.title)}</div>
+            <div class="reward-item-desc">${escapeHtml(r.description)}</div>
+            <div class="reward-cost-tag">${r.cost_spasibki} спасибок</div>
           </div>
-        `;
-      }).join("");
+          <div>
+            <button class="sferum-btn btn-primary" onclick="handleClaimReward(${r.id}, ${r.cost_spasibki})">Обменять</button>
+          </div>
+        </div>
+      `).join("");
     }
 
-    // My Requests list
-    if (requestsList) {
-      if (!data.my_requests || !data.my_requests.length) {
-        requestsList.innerHTML = '<p class="empty-hint">Пока нет запросов на награды.</p>';
-      } else {
-        const labels = {
-          pending: ["На рассмотрении", "status-pending"],
-          approved: ["Одобрено", "status-approved"],
-          rejected: ["Отклонено", "status-rejected"],
-        };
-        requestsList.innerHTML = data.my_requests.map((req) => {
-          const [text, cls] = labels[req.status] || labels.pending;
-          return `
-            <div class="req-item">
-              <div>
-                <strong>${escapeHtml(req.reward_title)}</strong>
-                <div class="muted" style="font-size: 11px;">${escapeHtml(req.created_at)}</div>
-              </div>
-              <span class="status-badge ${cls}">${text}</span>
-            </div>
-          `;
-        }).join("");
-      }
-    }
+    loadMyClaims();
+
   } catch (err) {
-    grid.innerHTML = '<p class="empty-hint">Ошибка загрузки наград.</p>';
+    container.innerHTML = '<p class="empty-state-text">Не удалось загрузить лавку</p>';
   }
 }
 
-async function handleBuyReward(rewardId) {
+async function loadMyClaims() {
+  const container = document.getElementById("my-requests-list");
   try {
-    const res = await fetch("/api/rewards/buy", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-User-Id": String(currentUserId) },
-      body: JSON.stringify({ user_id: currentUserId, reward_id: rewardId }),
-    });
-    const result = await res.json();
-    if (!res.ok) {
-      showToast(result.detail || result.error || "Не удалось запросить награду");
+    const res = await fetch(`/api/my-claims?user_id=${currentUserId}`);
+    const claims = await res.json();
+
+    if (!claims.length) {
+      container.innerHTML = '<p class="empty-state-text">У вас пока нет активных запросов.</p>';
       return;
     }
-    showToast(result.message || "Запрос отправлен учителю");
-    launchConfetti();
-    loadProfile();
-    loadRewards();
+
+    container.innerHTML = claims.map(c => {
+      let statusText = "Ожидает учителя";
+      let statusClass = "status-requested";
+      if (c.status === "approved") {
+        statusText = "Одобрено учителем";
+        statusClass = "status-approved";
+      } else if (c.status === "rejected") {
+        statusText = "Отклонено";
+        statusClass = "status-rejected";
+      }
+
+      return `
+        <div class="claim-history-row">
+          <div>
+            <strong>${escapeHtml(c.title)}</strong>
+            <div class="stat-caption">${c.cost_spasibki} спасибок</div>
+          </div>
+          <span class="claim-status-pill ${statusClass}">${statusText}</span>
+        </div>
+      `;
+    }).join("");
+
   } catch (err) {
-    showToast("Ошибка при покупке награды");
+    container.innerHTML = '<p class="empty-state-text">Не удалось загрузить историю наград</p>';
   }
 }
 
-/* ============================================================
-   GIGACHAT AI TUTOR (ДИАЛОГ С ГИГАЧАТОМ)
-   ============================================================ */
-
-async function handleSendGigaChat(event) {
-  if (event) event.preventDefault();
-  const inputEl = document.getElementById("gigachat-input");
-  const sendBtn = document.getElementById("gigachat-send-btn");
-  const text = (inputEl?.value || "").trim();
-  if (!text) return;
-
-  const msgsBox = document.getElementById("gigachat-messages");
-  if (!msgsBox) return;
-
-  // 1. Append user message
-  const userDiv = document.createElement("div");
-  userDiv.className = "giga-msg user";
-  userDiv.innerHTML = `
-    <div class="giga-msg-avatar">
-      <span class="material-symbols-outlined">person</span>
-    </div>
-    <div class="giga-msg-bubble">${escapeHtml(text)}</div>
-  `;
-  msgsBox.appendChild(userDiv);
-  inputEl.value = "";
-  if (sendBtn) sendBtn.disabled = true;
-
-  // 2. Typing indicator
-  const typingId = "giga-typing-" + Date.now();
-  const typingDiv = document.createElement("div");
-  typingDiv.className = "giga-msg assistant";
-  typingDiv.id = typingId;
-  typingDiv.innerHTML = `
-    <div class="giga-msg-avatar">
-      <span class="material-symbols-outlined">smart_toy</span>
-    </div>
-    <div class="giga-msg-bubble">
-      <div class="giga-typing"><span></span><span></span><span></span></div>
-    </div>
-  `;
-  msgsBox.appendChild(typingDiv);
-  msgsBox.scrollTop = msgsBox.scrollHeight;
+async function handleClaimReward(rewardId, cost) {
+  if (currentUserData && currentUserData.balance_spasibki < cost) {
+    showToast(`Нужно ${cost} спасибок. У вас ${currentUserData.balance_spasibki}`);
+    return;
+  }
 
   try {
-    const res = await fetch("/api/gigachat/chat", {
+    const res = await fetch("/api/rewards/claim", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-User-Id": String(currentUserId) },
+      headers: {
+        "Content-Type": "application/json",
+        "X-User-Id": currentUserId,
+      },
       body: JSON.stringify({
+        reward_id: rewardId,
         user_id: currentUserId,
-        message: text,
-        history: gigachatHistory,
-        class_id: activeClassChatId,
-      }),
+        chat_id: selectedChatId !== "all" ? selectedChatId : null,
+      })
     });
-    const data = await res.json();
-    document.getElementById(typingId)?.remove();
 
-    const reply = data.reply || "Не удалось получить ответ от ГигаЧата. Пожалуйста, попробуйте позже.";
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || "Ошибка запроса");
+    }
 
-    // 3. Append assistant message
-    const replyDiv = document.createElement("div");
-    replyDiv.className = "giga-msg assistant";
-    replyDiv.innerHTML = `
-      <div class="giga-msg-avatar">
-        <span class="material-symbols-outlined">smart_toy</span>
-      </div>
-      <div class="giga-msg-bubble">${escapeHtml(reply)}</div>
-    `;
-    msgsBox.appendChild(replyDiv);
-
-    // Update history
-    gigachatHistory.push({ role: "user", content: text });
-    gigachatHistory.push({ role: "assistant", content: reply });
-    if (gigachatHistory.length > 12) gigachatHistory = gigachatHistory.slice(-12);
+    showToast("Заявка успешно отправлена учителю!");
+    loadProfile();
+    loadRewards();
 
   } catch (err) {
-    document.getElementById(typingId)?.remove();
-    const errDiv = document.createElement("div");
-    errDiv.className = "giga-msg assistant";
-    errDiv.innerHTML = `
-      <div class="giga-msg-avatar">
-        <span class="material-symbols-outlined">smart_toy</span>
-      </div>
-      <div class="giga-msg-bubble">Сервис временно недоступен. Проверьте соединение с интернетом или повторите позже.</div>
-    `;
-    msgsBox.appendChild(errDiv);
-  } finally {
-    if (sendBtn) sendBtn.disabled = false;
-    msgsBox.scrollTop = msgsBox.scrollHeight;
-    inputEl?.focus();
+    showToast(err.message || "Ошибка обмена");
   }
 }
-
-function sendQuickPrompt(promptText) {
-  const inputEl = document.getElementById("gigachat-input");
-  if (!inputEl) return;
-  inputEl.value = promptText;
-  handleSendGigaChat();
-}
-
-function clearGigaChatHistory() {
-  gigachatHistory = [];
-  const msgsBox = document.getElementById("gigachat-messages");
-  if (msgsBox) {
-    msgsBox.innerHTML = `
-      <div class="giga-msg assistant">
-        <div class="giga-msg-avatar">
-          <span class="material-symbols-outlined">smart_toy</span>
-        </div>
-        <div class="giga-msg-bubble">Здравствуйте! Я ГигаЧат — ваш помощник в учебе. Напишите условие задачи, формулу или тему, и я помогу разобраться шаг за шагом.</div>
-      </div>
-    `;
-  }
-  showToast("Диалог с ГигаЧатом начат заново");
-}
-
-function copyParentLink() {
-  const input = document.getElementById("parent-link");
-  if (!input?.value) return;
-  navigator.clipboard.writeText(input.value);
-  showToast("Ссылка для родителей скопирована");
-}
-
-/* ============================================================
-   TEACHER CABINET
-   ============================================================ */
 
 async function loadTeacherData() {
-  const reqList = document.getElementById("teacher-requests-list");
-  if (!reqList) return;
-  reqList.innerHTML = '<div class="loading-spinner">Загрузка заявок…</div>';
+  const listContainer = document.getElementById("teacher-requests-list");
+  const badgeCount = document.getElementById("pending-claims-count");
+  listContainer.innerHTML = '<div class="state-loading">Загрузка заявок...</div>';
 
   try {
-    const requests = await (await fetch(`/api/teacher/requests?teacher_id=${currentUserId}`)).json();
-    if (!Array.isArray(requests)) {
-      reqList.innerHTML = '<p class="empty-hint">Нет доступа к учительской.</p>';
-      return;
+    let url = `/api/teacher/overview?user_id=${currentUserId}`;
+    if (teacherSelectedChatId && teacherSelectedChatId !== "all") {
+      url += `&chat_id=${teacherSelectedChatId}`;
     }
-    if (!requests.length) {
-      reqList.innerHTML = '<p class="empty-hint">Нет ожидающих заявок на награды.</p>';
+
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("Только для учителей");
+    const overview = await res.json();
+
+    const claims = overview.pending_claims || [];
+    if (badgeCount) badgeCount.textContent = claims.length;
+
+    if (!claims.length) {
+      listContainer.innerHTML = '<p class="empty-state-text">Новых заявок от учеников нет.</p>';
     } else {
-      reqList.innerHTML = requests.map((req) => `
-        <div class="teacher-req-item">
-          <div class="teacher-req-header">
-            <span>${escapeHtml(req.student_name)}</span>
-            <span style="color: var(--sf-gold); font-weight: 700;">${req.price_coins} спасибок</span>
+      listContainer.innerHTML = claims.map(c => `
+        <div class="teacher-claim-card">
+          <div class="claim-user-row">
+            <span class="claim-student-name">${escapeHtml(c.student_name)}</span>
+            <span class="claim-price-pill">${c.cost_spasibki} спасибок</span>
           </div>
-          <div style="margin: 4px 0;"><strong>${escapeHtml(req.reward_title)}</strong></div>
-          <div class="muted" style="font-size: 11px; margin-bottom: 8px;">${escapeHtml(req.created_at)}</div>
-          <div class="teacher-req-actions">
-            <button class="btn btn-green flex-1" onclick="handleReviewRequest(${req.id}, 'approve')">
-              <span class="material-symbols-outlined">check</span> Одобрить
-            </button>
-            <button class="btn btn-red flex-1" onclick="handleReviewRequest(${req.id}, 'reject')">
-              <span class="material-symbols-outlined">close</span> Отклонить
-            </button>
+          <div class="claim-reward-text">Запрос: <b>${escapeHtml(c.reward_title)}</b></div>
+          <div class="claim-btn-row">
+            <button class="sferum-btn btn-primary flex-1" onclick="handleReviewClaim(${c.claim_id}, 'approved')">Одобрить</button>
+            <button class="sferum-btn btn-outline flex-1" onclick="handleReviewClaim(${c.claim_id}, 'rejected')">Отклонить</button>
           </div>
         </div>
       `).join("");
     }
 
-    // Unanswered questions
-    const hang = document.getElementById("teacher-unanswered-list");
-    if (hang) {
-      const items = await (await fetch(`/api/teacher/unanswered?teacher_id=${currentUserId}`)).json();
-      if (!Array.isArray(items) || !items.length) {
-        hang.innerHTML = '<p class="empty-hint">Все вопросы разобраны!</p>';
-      } else {
-        hang.innerHTML = items.map((q) => `
-          <div class="teacher-req-item">
-            <div class="teacher-req-header">
-              <span>${escapeHtml(q.subject)}</span>
-              <span class="muted" style="font-size: 11px;">${escapeHtml(q.created_at)}</span>
-            </div>
-            <div style="font-weight: 600; margin: 4px 0;">${escapeHtml(q.text)}</div>
-            <div class="muted" style="font-size: 11px; margin-bottom: 8px;">Автор: ${escapeHtml(q.author_name)}</div>
-            <div class="teacher-req-actions">
-              <button class="btn btn-primary flex-1" onclick="handleExemplar(${q.id})">
-                <span class="material-symbols-outlined">star</span> В шпаргалку
-              </button>
-            </div>
-          </div>
-        `).join("");
-      }
-    }
-
-    // Exam status
-    const cls = await (await fetch(`/api/teacher/class?teacher_id=${currentUserId}`)).json();
-    const examStatus = document.getElementById("exam-status");
-    if (examStatus) examStatus.textContent = cls.exam_label || "Контрольной нет. При включении лавка закрывается на день.";
-
-    const examToggles = document.getElementById("exam-subjects");
-    if (examToggles && cls.subjects) {
-      const examAll = (cls.exam_subjects || []).includes("*");
-      examToggles.innerHTML = cls.subjects.map((name) => `
-        <label class="toggle">
-          <input type="checkbox" value="${escapeHtml(name)}" ${examAll || (cls.exam_subjects || []).includes(name) ? "checked" : ""}>
-          ${escapeHtml(name)}
-        </label>
-      `).join("");
-    }
-
-    // Weekly export preview
-    const preview = document.getElementById("week-export-preview");
-    if (preview) {
-      const week = await (await fetch(`/api/teacher/export?teacher_id=${currentUserId}`)).json();
-      const topics = (week.subjects || []).map(([name, n]) => `<b>${name}</b>: ${n}`).join(" · ") || "нет вопросов";
-      preview.innerHTML = `За последние 7 дней: <b>${week.questions || 0}</b> вопросов задано, <b>${week.answered || 0}</b> решено.<br>Темы: ${topics}`;
-    }
-
-    // Students select for teacher award
-    const students = await (await fetch("/api/students")).json();
-    const selectAward = document.getElementById("teacher-award-student");
-    if (selectAward) {
-      selectAward.innerHTML =
-        '<option value="">Выберите ученика для награды…</option>' +
-        students.map((s) => `<option value="${s.max_user_id}">${escapeHtml(s.name)} (${s.xp} XP)</option>`).join("");
-    }
+    loadStudentsDropdown();
 
   } catch (err) {
-    reqList.innerHTML = '<p class="empty-hint">Ошибка загрузки данных учительской.</p>';
+    listContainer.innerHTML = '<p class="empty-state-text">Кабинет доступен учителям.</p>';
   }
 }
 
-async function handleReviewRequest(requestId, action) {
+async function loadStudentsDropdown() {
+  const selectElem = document.getElementById("teacher-award-student");
   try {
-    const result = await (await fetch("/api/teacher/request/review", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-User-Id": String(currentUserId) },
-      body: JSON.stringify({ teacher_id: currentUserId, request_id: requestId, action }),
-    })).json();
-    showToast(result.message || "Статус заявки обновлён");
-    loadTeacherData();
-    loadProfile();
+    let url = "/api/students";
+    if (teacherSelectedChatId && teacherSelectedChatId !== "all") {
+      url += `?chat_id=${teacherSelectedChatId}`;
+    }
+    const res = await fetch(url);
+    const students = await res.json();
+    selectElem.innerHTML = '<option value="">Выберите ученика...</option>' +
+      students.map(s => `<option value="${s.max_user_id}">${escapeHtml(s.display_name)} (${s.xp} XP, ${s.balance_spasibki} спасибок)</option>`).join("");
   } catch (err) {
-    showToast("Ошибка рассмотрения заявки");
+    selectElem.innerHTML = '<option value="">Ошибка загрузки учеников</option>';
   }
 }
 
-async function handleCreateReward(event) {
-  event.preventDefault();
+async function handleReviewClaim(claimId, decision) {
+  try {
+    const res = await fetch("/api/teacher/review-claim", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-User-Id": currentUserId,
+      },
+      body: JSON.stringify({ claim_id: claimId, decision: decision })
+    });
+
+    if (!res.ok) throw new Error("Ошибка обновления");
+    showToast(decision === "approved" ? "Заявка одобрена!" : "Заявка отклонена");
+    loadTeacherData();
+
+  } catch (err) {
+    showToast("Не удалось обработать заявку");
+  }
+}
+
+async function handleCreateReward(e) {
+  e.preventDefault();
   const title = document.getElementById("rew-title").value.trim();
   const desc = document.getElementById("rew-desc").value.trim();
-  const price = parseInt(document.getElementById("rew-price").value, 10);
-  const limit = parseInt(document.getElementById("rew-limit").value, 10) || 1;
-  const stockVal = document.getElementById("rew-stock").value;
-  const stock = stockVal ? parseInt(stockVal, 10) : null;
-  const icon = document.getElementById("rew-icon").value;
+  const price = parseInt(document.getElementById("rew-price").value);
+  const chatId = document.getElementById("rew-chat-select").value;
+
+  if (!title || !desc || !price) return;
 
   try {
-    const res = await fetch("/api/teacher/reward/create", {
+    const res = await fetch("/api/teacher/rewards", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-User-Id": String(currentUserId) },
+      headers: {
+        "Content-Type": "application/json",
+        "X-User-Id": currentUserId,
+      },
       body: JSON.stringify({
-        teacher_id: currentUserId,
         title: title,
         description: desc,
-        price_coins: price,
-        max_per_student: limit,
-        stock: stock,
-        icon: icon,
-        group_chat_id: activeClassChatId,
-      }),
+        cost_spasibki: price,
+        chat_id: chatId !== "all" ? chatId : null,
+      })
     });
-    const result = await res.json();
-    if (!res.ok) {
-      showToast(result.detail || "Ошибка создания награды");
-      return;
-    }
-    showToast(result.message || "Награда добавлена в лавку");
+
+    if (!res.ok) throw new Error("Ошибка публикации");
+    showToast("Награда добавлена в лавку!");
     document.getElementById("create-reward-form").reset();
-    loadRewards();
-  } catch (err) {
-    showToast("Ошибка создания награды");
-  }
-}
+    document.getElementById("rew-price").value = 30;
 
-async function handleExam(enabled) {
-  try {
-    const result = await (await fetch("/api/teacher/exam", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-User-Id": String(currentUserId) },
-      body: JSON.stringify({ teacher_id: currentUserId, enabled }),
-    })).json();
-    showToast(result.exam_label || (enabled ? "Контрольная включена" : "Контрольная снята"));
-    loadTeacherData();
-    loadProfile();
   } catch (err) {
-    showToast("Ошибка обновления контрольной");
-  }
-}
-
-async function saveExamSubjects() {
-  const checked = [...document.querySelectorAll("#exam-subjects input:checked")].map((el) => el.value);
-  try {
-    const result = await (await fetch("/api/teacher/exam", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-User-Id": String(currentUserId) },
-      body: JSON.stringify({ teacher_id: currentUserId, enabled: true, subjects: checked.length ? checked : ["*"], days: 1 }),
-    })).json();
-    showToast(result.exam_label || "Контрольная включена на сегодня");
-    loadTeacherData();
-    loadProfile();
-  } catch (err) {
-    showToast("Ошибка сохранения тем");
-  }
-}
-
-function downloadWeekExport() {
-  window.location.href = `/api/teacher/export.csv?teacher_id=${currentUserId}`;
-}
-
-async function handleExemplar(questionId) {
-  const note = prompt("Короткий конспект для шпаргалки (правило, формула, тезис):", "") || "";
-  try {
-    const result = await (await fetch("/api/teacher/exemplar", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-User-Id": String(currentUserId) },
-      body: JSON.stringify({ teacher_id: currentUserId, question_id: questionId, note }),
-    })).json();
-    showToast(result.message || "Добавлено в шпаргалку");
-    loadTeacherData();
-    loadCheatsheet();
-  } catch (err) {
-    showToast("Ошибка добавления в шпаргалку");
+    showToast("Не удалось добавить награду");
   }
 }
 
 async function handleAwardTeacherBadge() {
-  const studentId = document.getElementById("teacher-award-student")?.value;
+  const studentId = document.getElementById("teacher-award-student").value;
   if (!studentId) {
-    showToast("Выберите ученика для награждения");
+    showToast("Выберите ученика из списка");
     return;
   }
+
   try {
-    const result = await (await fetch("/api/teacher/award_badge", {
+    const res = await fetch("/api/teacher/award-badge", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-User-Id": String(currentUserId) },
-      body: JSON.stringify({ teacher_id: currentUserId, student_id: parseInt(studentId, 10) }),
-    })).json();
-    showToast(result.message || "Награда «Выбор учителя» вручена");
-    launchConfetti();
-    loadProfile();
+      headers: {
+        "Content-Type": "application/json",
+        "X-User-Id": currentUserId,
+      },
+      body: JSON.stringify({ student_id: studentId, badge_code: "teacher_choice" })
+    });
+
+    if (!res.ok) throw new Error("Ошибка награждения");
+    showToast("Бейдж «Выбор учителя» успешно вручён!");
+    loadTeacherData();
+
   } catch (err) {
-    showToast("Ошибка вручения награды");
+    showToast("Не удалось вручить награду");
   }
 }
 
-/* ============================================================
-   LIGHTWEIGHT CONFETTI ENGINE
-   ============================================================ */
-
-function launchConfetti() {
-  const canvas = document.getElementById("confetti-canvas");
-  if (!canvas) return;
-  const ctx = canvas.getContext("2d");
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
-
-  const colors = ["#7B61FF", "#4BB34B", "#F5A623", "#E64646", "#4AA3FF"];
-  const pieces = Array.from({ length: 50 }, () => ({
-    x: canvas.width / 2,
-    y: canvas.height * 0.4,
-    vx: (Math.random() - 0.5) * 14,
-    vy: (Math.random() - 0.9) * 14,
-    size: Math.random() * 8 + 4,
-    color: colors[Math.floor(Math.random() * colors.length)],
-    rot: Math.random() * 360,
-    rotSpeed: (Math.random() - 0.5) * 10,
-    alpha: 1,
-  }));
-
-  let frame = 0;
-  function animate() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    let alive = false;
-    for (const p of pieces) {
-      p.x += p.vx;
-      p.y += p.vy;
-      p.vy += 0.4;
-      p.rot += p.rotSpeed;
-      if (frame > 25) p.alpha -= 0.02;
-
-      if (p.alpha > 0 && p.y < canvas.height) {
-        alive = true;
-        ctx.save();
-        ctx.globalAlpha = Math.max(0, p.alpha);
-        ctx.translate(p.x, p.y);
-        ctx.rotate((p.rot * Math.PI) / 180);
-        ctx.fillStyle = p.color;
-        ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * 1.5);
-        ctx.restore();
-      }
-    }
-    frame++;
-    if (alive && frame < 90) {
-      requestAnimationFrame(animate);
-    } else {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
-  }
-  requestAnimationFrame(animate);
-}
-
-/* ============================================================
-   TOAST NOTIFICATION
-   ============================================================ */
-
-function showToast(message) {
+function showToast(text) {
   const toast = document.getElementById("toast");
-  if (!toast) return;
-  toast.textContent = message;
+  toast.textContent = text;
   toast.classList.remove("hidden");
-  clearTimeout(showToast._t);
-  showToast._t = setTimeout(() => toast.classList.add("hidden"), 3000);
+  clearTimeout(window.__toastTimeout);
+  window.__toastTimeout = setTimeout(() => {
+    toast.classList.add("hidden");
+  }, 2600);
+}
+
+function escapeHtml(str) {
+  if (!str) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }

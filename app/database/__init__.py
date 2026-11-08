@@ -1,5 +1,7 @@
 from app.database.models import (
-    Base,
+    SQLModel,
+    Chat,
+    ChatMember,
     User,
     Question,
     Answer,
@@ -13,7 +15,9 @@ from app.database.models import (
 from app.database.session import engine, async_session_factory, init_db, get_db_session
 
 __all__ = [
-    "Base",
+    "SQLModel",
+    "Chat",
+    "ChatMember",
     "User",
     "Question",
     "Answer",
@@ -28,4 +32,3 @@ __all__ = [
     "init_db",
     "get_db_session",
 ]
-

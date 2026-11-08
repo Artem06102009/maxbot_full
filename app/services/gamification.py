@@ -1,8 +1,9 @@
 from collections import Counter
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, List, Optional, Tuple
-from sqlalchemy import func, select
+from sqlmodel import select, func, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.config import get_settings
 from app.database.models import (
     Achievement,
     Answer,
@@ -11,20 +12,8 @@ from app.database.models import (
     User,
     UserAchievement,
 )
-from app.services.anti_cheat import AntiCheatService
-from app.services.class_tools import msk_today
 
-QUALITY_REWARDS = {
-    "clear": (1, 50),
-    "short": (1, 25),
-    "error": (0, 10),
-}
-QUALITY_LABELS = {
-    "clear": "понятно",
-    "short": "коротко",
-    "error": "с ошибкой",
-}
-
+settings = get_settings()
 SCHOOL_TZ = timezone(timedelta(hours=3))
 
 def ensure_utc(dt: Optional[datetime]) -> datetime:
@@ -37,6 +26,100 @@ def ensure_utc(dt: Optional[datetime]) -> datetime:
 def to_school_date(dt: Optional[datetime]) -> date:
     utc_dt = ensure_utc(dt)
     return utc_dt.astimezone(SCHOOL_TZ).date()
+
+class AntiCheatService:
+    @staticmethod
+    def validate_answer_eligibility(question_author_id: Any, helper_id: Any) -> bool:
+        if question_author_id is None or helper_id is None:
+            return False
+        q_author = str(question_author_id).strip().lower()
+        h_author = str(helper_id).strip().lower()
+        return bool(q_author and h_author)
+
+    @staticmethod
+    def is_curfew_active(
+        dt: Optional[datetime] = None,
+        start_hour: Optional[int] = None,
+        end_hour: Optional[int] = None,
+    ) -> bool:
+        if dt is None:
+            dt = datetime.now(SCHOOL_TZ)
+        elif dt.tzinfo is None:
+            dt = dt.replace(tzinfo=SCHOOL_TZ)
+        else:
+            dt = dt.astimezone(SCHOOL_TZ)
+
+        current_time = dt.time()
+        start_val = start_hour if start_hour is not None else settings.CURFEW_START_HOUR
+        end_val = end_hour if end_hour is not None else settings.CURFEW_END_HOUR
+        start = time(start_val, 0)
+        end = time(end_val, 0)
+
+        if start > end:
+            return current_time >= start or current_time < end
+        elif start < end:
+            return start <= current_time < end
+        return False
+
+    @staticmethod
+    async def check_daily_gratitude_limit(
+        session: AsyncSession,
+        author_id: Optional[str] = None,
+        helper_id: Optional[str] = None,
+        date: Optional[date] = None,
+        *,
+        author_max_id: Optional[str] = None,
+        helper_max_id: Optional[str] = None,
+        check_date: Optional[date] = None,
+    ) -> bool:
+        author = str(author_id or author_max_id or "").strip().lower()
+        helper = str(helper_id or helper_max_id or "").strip().lower()
+        target_date_val = date if date is not None else check_date
+        if target_date_val is None:
+            target_date_val = datetime.now(SCHOOL_TZ).date()
+        elif isinstance(target_date_val, datetime):
+            if target_date_val.tzinfo is None:
+                target_date_val = target_date_val.replace(tzinfo=SCHOOL_TZ).date()
+            else:
+                target_date_val = target_date_val.astimezone(SCHOOL_TZ).date()
+
+        start_school = datetime.combine(target_date_val, time.min).replace(tzinfo=SCHOOL_TZ)
+        end_school = datetime.combine(target_date_val, time.max).replace(tzinfo=SCHOOL_TZ)
+        start_dt = start_school.astimezone(timezone.utc).replace(tzinfo=None)
+        end_dt = end_school.astimezone(timezone.utc).replace(tzinfo=None)
+
+        q_answers = (
+            select(func.count(Answer.id))
+            .join(Question, Answer.question_id == Question.id)
+            .where(
+                func.lower(Question.author_max_id) == author,
+                func.lower(Answer.author_max_id) == helper,
+                Answer.status == "accepted",
+                or_(
+                    and_(Answer.created_at >= start_dt, Answer.created_at <= end_dt),
+                    and_(
+                        Question.closed_at.is_not(None),
+                        Question.closed_at >= start_dt,
+                        Question.closed_at <= end_dt,
+                    ),
+                ),
+            )
+        )
+        res = await session.execute(q_answers)
+        if res.scalar_one() >= 1:
+            return True
+
+        q_audit = (
+            select(func.count(AuditLog.id))
+            .where(
+                func.lower(AuditLog.actor_max_id) == author,
+                AuditLog.action == "award_gratitude",
+                AuditLog.created_at >= start_dt,
+                AuditLog.created_at <= end_dt,
+            )
+        )
+        res_audit = await session.execute(q_audit)
+        return res_audit.scalar_one() >= 1
 
 class GamificationService:
     RANKS = (
@@ -57,28 +140,27 @@ class GamificationService:
         return "Новичок"
 
     @classmethod
-    def update_help_streak(cls, helper: User) -> int:
-        today = msk_today()
-        yesterday = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
-        if helper.last_help_on == today:
-            return helper.help_streak or 0
-        if helper.last_help_on == yesterday:
-            helper.help_streak = (helper.help_streak or 0) + 1
-        else:
-            helper.help_streak = 1
-        helper.last_help_on = today
-        helper.streak_best = max(helper.streak_best or 0, helper.help_streak)
-        return helper.help_streak
-
-    @classmethod
     async def award_gratitude(
         cls,
         session: AsyncSession,
-        question: Question,
-        answer: Answer,
+        question: Optional[Question] = None,
+        answer: Optional[Answer] = None,
         now: Optional[datetime] = None,
-        quality: str = "clear",
+        *,
+        question_id: Optional[int] = None,
+        answer_id: Optional[int] = None,
+        author_id: Optional[str] = None,
+        helper_id: Optional[str] = None,
     ) -> Tuple[int, int]:
+        if question is None and question_id is not None:
+            res_q = await session.execute(select(Question).where(Question.id == question_id))
+            question = res_q.scalar_one_or_none()
+        if answer is None and answer_id is not None:
+            res_a = await session.execute(select(Answer).where(Answer.id == answer_id))
+            answer = res_a.scalar_one_or_none()
+        if question is None or answer is None:
+            raise ValueError("Question or answer not found")
+
         if not AntiCheatService.validate_answer_eligibility(
             question.author_max_id, answer.author_max_id
         ):
@@ -87,9 +169,6 @@ class GamificationService:
             raise ValueError("Answer is already processed")
 
         event_now = ensure_utc(now)
-        if quality not in QUALITY_REWARDS:
-            quality = "clear"
-        base_coins, base_xp = QUALITY_REWARDS[quality]
 
         is_curfew = AntiCheatService.is_curfew_active(event_now)
         is_daily_limit = await AntiCheatService.check_daily_gratitude_limit(
@@ -99,31 +178,25 @@ class GamificationService:
             to_school_date(event_now),
         )
 
-        delta_spasibki = 0 if is_daily_limit else base_coins
-        delta_xp = 0 if is_daily_limit else base_xp
+        if is_curfew or is_daily_limit:
+            delta_spasibki = 0
+            delta_xp = 0
+        else:
+            delta_spasibki = 1
+            delta_xp = 50
 
         user_query = select(User).where(User.max_user_id == answer.author_max_id)
         user_res = await session.execute(user_query)
         helper = user_res.scalar_one_or_none()
         if helper is not None:
-            if is_curfew and not is_daily_limit:
-                helper.pending_xp += delta_xp
-                helper.pending_coins += delta_spasibki
-            else:
-                helper.balance_spasibki += delta_spasibki
-                helper.xp += delta_xp
-                helper.rank = cls.calculate_rank(helper.xp)
-            if quality != "error" and not is_daily_limit:
-                cls.update_help_streak(helper)
+            helper.balance_spasibki += delta_spasibki
+            helper.xp += delta_xp
+            helper.rank = cls.calculate_rank(helper.xp)
 
-        answer.quality = quality
-        if quality == "error":
-            answer.status = "rejected"
-        else:
-            answer.status = "accepted"
-            question.status = "resolved"
-            question.resolved_answer_id = answer.id
-            question.closed_at = event_now
+        answer.status = "accepted"
+        question.status = "resolved"
+        question.resolved_answer_id = answer.id
+        question.closed_at = event_now
 
         audit = AuditLog(
             actor_max_id=question.author_max_id,
@@ -131,7 +204,7 @@ class GamificationService:
             target_type="answer",
             target_id=str(answer.id),
             action="award_gratitude",
-            details=f"quality={quality},spasibki={delta_spasibki},xp={delta_xp},curfew={is_curfew},limit={is_daily_limit}",
+            details=f"spasibki={delta_spasibki},xp={delta_xp},curfew={is_curfew},limit={is_daily_limit}",
             created_at=event_now,
         )
         session.add(audit)
@@ -217,28 +290,19 @@ class GamificationService:
             if any(cnt >= 5 for cnt in date_counts.values()):
                 newly_awarded_codes.append("marathoner")
 
-        unique_dates = sorted(set(to_school_date(ans.created_at) for ans, _ in accepted_pairs))
-        streak = 1
-        max_streak = 1 if unique_dates else 0
-        for i in range(1, len(unique_dates)):
-            if unique_dates[i] - unique_dates[i - 1] == timedelta(days=1):
-                streak += 1
-                if streak > max_streak:
-                    max_streak = streak
-            else:
-                streak = 1
-        helper_row = (await session.execute(select(User).where(User.max_user_id == user_id))).scalar_one_or_none()
-        live_streak = max(max_streak, (helper_row.help_streak if helper_row else 0) or 0)
-        if "streak_3" in pending_codes and live_streak >= 3:
-            newly_awarded_codes.append("streak_3")
-        if "streak_5" in pending_codes and live_streak >= 5:
-            newly_awarded_codes.append("streak_5")
-        if "week_streak" in pending_codes and live_streak >= 7:
-            newly_awarded_codes.append("week_streak")
-        if "clear_five" in pending_codes:
-            clear_n = sum(1 for ans, _ in accepted_pairs if getattr(ans, "quality", None) in (None, "clear"))
-            if clear_n >= 5:
-                newly_awarded_codes.append("clear_five")
+        if "week_streak" in pending_codes:
+            unique_dates = sorted(set(to_school_date(ans.created_at) for ans, _ in accepted_pairs))
+            streak = 1
+            max_streak = 1 if unique_dates else 0
+            for i in range(1, len(unique_dates)):
+                if unique_dates[i] - unique_dates[i - 1] == timedelta(days=1):
+                    streak += 1
+                    if streak > max_streak:
+                        max_streak = streak
+                else:
+                    streak = 1
+            if max_streak >= 7:
+                newly_awarded_codes.append("week_streak")
 
         if "mentor" in pending_codes:
             distinct_authors = set(q.author_max_id for _, q in accepted_pairs)

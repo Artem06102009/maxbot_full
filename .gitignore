@@ -1,11 +1,12 @@
-# Секретные конфигурации и токены
 .env
-
-# Локальная база данных
+DEPLOY.md
 database.db
-database.db-journal
+database.db*
+data/
+*.db
+*.sqlite
+*.sqlite3
 
-# Кэш Python и виртуальные окружения
 __pycache__/
 *.py[cod]
 *$py.class
@@ -13,18 +14,14 @@ venv/
 .venv/
 env/
 
-# IDE и системные файлы
 .idea/
 .vscode/
 *.swp
 .DS_Store
 Thumbs.db
 *.log
+*.zip
 
-# Внутренние файлы хакатона и исходные материалы (не загружаются на GitHub)
 описание идеи и требования/
 "описание идеи и требования"/
 scratch/
-
-DEPLOY.md
-MAXUI-Figma.fig

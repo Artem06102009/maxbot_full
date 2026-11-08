@@ -1,416 +1,321 @@
 <!DOCTYPE html>
-<html lang="ru" data-theme="dark">
+<html lang="ru" data-theme="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>Лига Помощников</title>
+  <title>Лига Помощников | Сферум</title>
   <script src="https://st.max.ru/js/max-web-app.js"></script>
-  <!-- Google Material Symbols -->
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="sf-app">
-    <!-- Desktop Navigation Rail -->
-    <aside class="sf-rail" aria-label="Навигация">
-      <div class="sf-logo" title="Лига Помощников">
-        <span>Л</span>
+
+  <header class="app-header">
+    <div class="header-main">
+      <div class="header-left">
+        <div class="header-avatar" id="header-avatar">УЧ</div>
+        <div class="header-user-info">
+          <div class="header-name-row">
+            <h1 class="header-name" id="header-name">Загрузка...</h1>
+            <span class="role-badge" id="header-role">Ученик</span>
+          </div>
+          <button class="class-picker-btn" id="class-picker-trigger" onclick="openClassModal()">
+            <svg class="icon-inline" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 21h18M3 10h18M5 6l7-3 7 3M4 10v11M20 10v11M8 14v3M12 14v3M16 14v3"/>
+            </svg>
+            <span id="current-class-label">Учебный класс</span>
+            <span class="picker-arrow">▾</span>
+          </button>
+        </div>
       </div>
-      <nav class="sf-rail-nav">
-        <button class="rail-btn active" data-tab="leaderboard" onclick="switchTab('leaderboard', this)" title="Рейтинг">
-          <span class="material-symbols-outlined">leaderboard</span>
-          <span>Рейтинг</span>
-        </button>
-        <button class="rail-btn" data-tab="rewards" onclick="switchTab('rewards', this)" title="Лавка">
-          <span class="material-symbols-outlined">shopping_bag</span>
-          <span>Лавка</span>
-        </button>
-        <button class="rail-btn" data-tab="gigachat" onclick="switchTab('gigachat', this)" title="ГигаЧат">
-          <span class="material-symbols-outlined">smart_toy</span>
-          <span>ГигаЧат</span>
-        </button>
-        <button class="rail-btn" data-tab="achievements" onclick="switchTab('achievements', this)" title="Ачивки">
-          <span class="material-symbols-outlined">military_tech</span>
-          <span>Ачивки</span>
-        </button>
-        <button class="rail-btn" data-tab="profile" onclick="switchTab('profile', this)" title="Профиль">
-          <span class="material-symbols-outlined">person</span>
-          <span>Профиль</span>
-        </button>
-        <button class="rail-btn" id="nav-teacher-btn" data-tab="teacher" onclick="switchTab('teacher', this)" title="Учитель" style="display: none;">
-          <span class="material-symbols-outlined">school</span>
-          <span>Учитель</span>
-        </button>
-      </nav>
-    </aside>
 
-    <!-- Main Content Stage -->
-    <div class="sf-stage">
-      <header class="sf-header">
-        <div class="sf-brand">
-          <div class="sf-logo mobile-only">Л</div>
-          <div>
-            <div class="sf-brand-title">Лига Помощников</div>
-            <!-- Class Selector Pill (Выбор разных чатов) -->
-            <button class="class-picker-btn" onclick="openClassPicker()" title="Переключить класс">
-              <span class="material-symbols-outlined" style="font-size: 15px;">school</span>
-              <span id="active-class-title">11 «А» класс</span>
-              <span class="picker-arrow">▾</span>
-            </button>
-          </div>
+      <div class="header-right">
+        <div class="coins-chip">
+          <svg class="icon-coin" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9"/>
+            <path d="M12 7v10M9 9.5h6a2 2 0 0 1 0 4H9"/>
+          </svg>
+          <span class="coins-amount" id="header-coins">0</span>
         </div>
 
-        <div class="sf-header-actions">
-          <div id="demo-bar" class="demo-bar">
-            <select id="demo-user-select" onchange="switchDemoUser(this.value)" aria-label="Тестовый пользователь">
-              <option value="1001">Аркадий</option>
-              <option value="1002">Маша</option>
-              <option value="1003">Иван</option>
-              <option value="9999">Мария Ивановна</option>
-            </select>
-          </div>
-
-          <!-- Dark/Light Theme Toggle -->
-          <button class="theme-toggle-btn" onclick="toggleTheme()" aria-label="Переключить тему" title="Переключить тему">
-            <span class="material-symbols-outlined" id="theme-icon">light_mode</span>
-          </button>
-
-          <div class="coins-pill" title="Спасибки" onclick="switchTab('rewards')">
-            <span class="material-symbols-outlined" style="font-size: 18px;">monetization_on</span>
-            <strong id="header-coins">0</strong>
-          </div>
-
-          <button class="user-chip" onclick="switchTab('profile')" type="button">
-            <span class="avatar" id="header-avatar">А</span>
-            <span class="user-chip-meta">
-              <span id="header-name">Загрузка…</span>
-              <span id="header-role">Ученик</span>
-            </span>
-          </button>
-        </div>
-      </header>
-
-      <div id="exam-banner" class="exam-banner hidden"></div>
-
-      <main class="sf-content">
-        <!-- 1. LEADERBOARD (Рейтинг) -->
-        <section id="tab-leaderboard" class="tab-pane active">
-          <div class="section-heading">
-            <div>
-              <h3>Доска почёта</h3>
-              <p>Топ помощников класса</p>
-            </div>
-          </div>
-
-          <!-- Current User Position Sticky Banner -->
-          <div class="card" id="my-rank-banner" style="display: flex; justify-content: space-between; align-items: center;">
-            <div>
-              <strong id="my-rank-title">Ваша позиция</strong>
-              <div class="muted" id="my-rank-sub">Отвечайте реплаем в чате класса в MAX!</div>
-            </div>
-            <div style="font-size: 18px; font-weight: 800; color: var(--sf-purple);" id="my-rank-xp">0 XP</div>
-          </div>
-
-          <!-- Top 3 Podium (Пьедестал) -->
-          <div class="card">
-            <div id="podium-container" class="podium-wrap"></div>
-          </div>
-
-          <!-- 4th Place and below in Column List (Остальные ниже в столбик) -->
-          <div class="card">
-            <h4 class="block-title" style="font-size: 16px; margin-bottom: 12px;">Участники рейтинга</h4>
-            <div class="leaderboard-list" id="leaderboard-container">
-              <div class="loading-spinner">Загрузка рейтинга…</div>
-            </div>
-          </div>
-        </section>
-
-        <!-- 2. REWARDS SHOP (Школьная лавка) -->
-        <section id="tab-rewards" class="tab-pane">
-          <div class="section-heading">
-            <div>
-              <h3>Школьная лавка</h3>
-              <p>Обменивайте спасибки на бонусы от учителя с персональными лимитами</p>
-            </div>
-          </div>
-
-          <div class="rewards-balance-bar">
-            <span class="material-symbols-outlined" style="font-size: 20px;">account_balance_wallet</span>
-            Баланс: <strong id="shop-coins">0</strong> спасибок
-          </div>
-
-          <p id="shop-lock" class="exam-banner hidden"></p>
-
-          <div class="rewards-grid" id="rewards-container">
-            <div class="loading-spinner">Загрузка лавки…</div>
-          </div>
-
-          <div class="card" style="margin-top: 20px;">
-            <h4 class="block-title" style="font-size: 16px; margin-bottom: 10px;">Мои запросы на награды</h4>
-            <div id="my-requests-list" class="requests-list">
-              <p class="empty-hint">Пока нет запросов.</p>
-            </div>
-          </div>
-        </section>
-
-        <!-- 3. GIGACHAT AI TUTOR (Диалог с ГигаЧатом) -->
-        <section id="tab-gigachat" class="tab-pane">
-          <div class="section-heading">
-            <div>
-              <h3>ГигаЧат Наставник</h3>
-              <p>Умный помощник по школьной программе на базе библиотеки GigaChat</p>
-            </div>
-            <button type="button" class="btn btn-ghost" onclick="clearGigaChatHistory()" title="Очистить диалог">
-              <span class="material-symbols-outlined">refresh</span>
-              <span>Новый диалог</span>
-            </button>
-          </div>
-
-          <!-- Quick Topic Suggestion Chips -->
-          <div class="gigachat-suggestions">
-            <button type="button" class="suggestion-chip" onclick="sendQuickPrompt('Объясни тему простыми словами с примером')">Объясни тему простыми словами</button>
-            <button type="button" class="suggestion-chip" onclick="sendQuickPrompt('Помоги составить алгоритм решения задачи')">Алгоритм решения</button>
-            <button type="button" class="suggestion-chip" onclick="sendQuickPrompt('Какая формула здесь применяется?')">Формулы и правила</button>
-            <button type="button" class="suggestion-chip" onclick="sendQuickPrompt('Составь план подготовки к контрольной')">План к уроку</button>
-          </div>
-
-          <!-- Chat Dialog Container -->
-          <div class="card gigachat-dialog-card">
-            <div id="gigachat-messages" class="gigachat-messages">
-              <div class="giga-msg assistant">
-                <div class="giga-msg-avatar">
-                  <span class="material-symbols-outlined">smart_toy</span>
-                </div>
-                <div class="giga-msg-bubble">Здравствуйте! Я ГигаЧат — ваш помощник в учебе. Напишите условие задачи, формулу или тему, и я помогу разобраться шаг за шагом.</div>
-              </div>
-            </div>
-
-            <!-- Input Box -->
-            <form id="gigachat-form" class="gigachat-input-box" onsubmit="handleSendGigaChat(event)">
-              <input type="text" id="gigachat-input" placeholder="Задайте вопрос по уроку или задаче..." required autocomplete="off">
-              <button type="submit" id="gigachat-send-btn" class="btn btn-primary" title="Отправить">
-                <span class="material-symbols-outlined">send</span>
-              </button>
-            </form>
-          </div>
-        </section>
-
-        <!-- 4. ACHIEVEMENTS (Достижения) -->
-        <section id="tab-achievements" class="tab-pane">
-          <div class="section-heading">
-            <div>
-              <h3>Достижения</h3>
-              <p>Челленджи класса за помощь одноклассникам</p>
-            </div>
-          </div>
-          <div class="achievements-grid" id="achievements-container">
-            <div class="loading-spinner">Загрузка достижений…</div>
-          </div>
-        </section>
-
-        <!-- 5. PROFILE (Профиль) -->
-        <section id="tab-profile" class="tab-pane">
-          <div class="profile-hero card">
-            <div class="avatar xl" id="profile-avatar">А</div>
-            <div>
-              <h2 id="profile-name">—</h2>
-              <p id="profile-level-title" class="muted">Новичок</p>
-            </div>
-            <div class="level-badge" id="profile-level-num">1 ур.</div>
-          </div>
-
-          <div class="card">
-            <div class="progress-labels">
-              <span>Прогресс звания</span>
-              <span id="profile-xp-text">0 / 50 XP</span>
-            </div>
-            <div class="progress-bar-bg">
-              <div id="profile-xp-fill" class="progress-bar-fill" style="width: 0%"></div>
-            </div>
-            <p id="night-hint" class="night-hint hidden">
-              <span class="material-symbols-outlined" style="font-size: 16px;">bedtime</span>
-              <span>Тихий час: опыт за ночную помощь начислится утром в 07:00.</span>
-            </p>
-          </div>
-
-          <div class="stats-grid">
-            <div class="card stat-card">
-              <span class="stat-val" id="profile-helped">0</span>
-              <span>Помог классу</span>
-            </div>
-            <div class="card stat-card">
-              <span class="stat-val" id="profile-questions">0</span>
-              <span>Вопросов</span>
-            </div>
-            <div class="card stat-card">
-              <span class="stat-val" id="profile-streak">0</span>
-              <span>Серия дней</span>
-            </div>
-            <div class="card stat-card">
-              <span class="stat-val" id="profile-rank">#—</span>
-              <span>Место в топе</span>
-            </div>
-          </div>
-
-          <div class="card info-card">
-            <h4 class="block-title" style="font-size: 15px; margin-bottom: 8px;">Правила Лиги Помощников</h4>
-            <p style="font-size: 13px; color: var(--sf-muted); line-height: 1.5; margin-bottom: 4px;">• <strong>В чате класса:</strong> только вопросы <code>/ask</code> и ответы реплаем.</p>
-            <p style="font-size: 13px; color: var(--sf-muted); line-height: 1.5; margin-bottom: 4px;">• <strong>В ЛС с ботом:</strong> подтверждение помощи, получение спасибок, подсказки наставника <code>/hint</code>.</p>
-            <p style="font-size: 13px; color: var(--sf-muted); line-height: 1.5;">• <strong>В лавке:</strong> обмен спасибок на реальные привилегии от учителя.</p>
-          </div>
-
-          <div class="card">
-            <h4 class="block-title" style="font-size: 15px;">Отчёт для родителей</h4>
-            <p class="muted">Защищённая сводка за 7 дней: успехи и взаимовыручка без переписки класса.</p>
-            <div class="form-row" style="margin-top: 10px;">
-              <input id="parent-link" readonly value="Загрузка…">
-              <button type="button" class="btn btn-primary" onclick="copyParentLink()">
-                <span class="material-symbols-outlined">content_copy</span>
-                <span>Копировать</span>
-              </button>
-            </div>
-          </div>
-        </section>
-
-        <!-- 6. TEACHER CABINET (Кабинет учителя) -->
-        <section id="tab-teacher" class="tab-pane">
-          <div class="section-heading">
-            <div>
-              <h3>Кабинет учителя</h3>
-              <p>Управление лавкой с лимитами, контрольные и выгрузка отчётов</p>
-            </div>
-          </div>
-
-          <div class="card">
-            <h4>Режим контрольной</h4>
-            <p class="muted" id="exam-status">Контрольной нет. При включении лавка закрывается на день.</p>
-            <div id="exam-subjects" class="subject-toggles"></div>
-            <div class="teacher-req-actions">
-              <button type="button" class="btn btn-primary flex-1" onclick="saveExamSubjects()">Включить на сегодня</button>
-              <button type="button" class="btn btn-ghost flex-1" onclick="handleExam(true)">Все темы</button>
-              <button type="button" class="btn btn-ghost flex-1" onclick="handleExam(false)">Снять контрольную</button>
-            </div>
-          </div>
-
-          <div class="card">
-            <h4>Выгрузка недели</h4>
-            <p class="muted">Сводка активности класса по предметам за 7 дней</p>
-            <div id="week-export-preview" class="muted" style="margin: 10px 0;">Откройте кабинет, чтобы загрузить сводку.</div>
-            <div class="teacher-req-actions">
-              <button type="button" class="btn btn-primary" onclick="downloadWeekExport()">
-                <span class="material-symbols-outlined">download</span>
-                <span>Скачать CSV</span>
-              </button>
-            </div>
-          </div>
-
-          <div class="card">
-            <h4>Вопросы без ответа</h4>
-            <div id="teacher-unanswered-list">
-              <p class="empty-hint">Все вопросы разобраны!</p>
-            </div>
-          </div>
-
-          <div class="card">
-            <h4>Входящие заявки на награды</h4>
-            <div id="teacher-requests-list">
-              <div class="loading-spinner">Загрузка заявок…</div>
-            </div>
-          </div>
-
-          <div class="card">
-            <h4>Добавить награду в лавку с лимитом</h4>
-            <form id="create-reward-form" onsubmit="handleCreateReward(event)">
-              <label>Название<input type="text" id="rew-title" required placeholder="Освобождение от одного ДЗ"></label>
-              <label>Описание<textarea id="rew-desc" rows="2" required placeholder="Условия применения"></textarea></label>
-              <div class="form-row">
-                <label class="flex-1">Цена (спасибок)<input type="number" id="rew-price" value="50" min="5" max="500" required></label>
-                <label class="flex-1">Лимит на ученика<input type="number" id="rew-limit" value="1" min="1" max="10" required title="Сколько раз один ученик может взять награду"></label>
-              </div>
-              <div class="form-row">
-                <label class="flex-1">Общий остаток (штук, опц.)<input type="number" id="rew-stock" placeholder="Без ограничений"></label>
-                <label class="flex-1">Тип награды
-                  <select id="rew-icon">
-                    <option value="assignment">Домашка</option>
-                    <option value="chair">Парта</option>
-                    <option value="task_alt">Проект</option>
-                    <option value="lightbulb">Консультация</option>
-                    <option value="local_cafe">Переменка</option>
-                    <option value="star">Звезда</option>
-                  </select>
-                </label>
-              </div>
-              <button type="submit" class="btn btn-primary full-width">Опубликовать бонус с лимитом</button>
-            </form>
-          </div>
-
-          <div class="card">
-            <h4>Вручить «Выбор учителя»</h4>
-            <p class="muted">+100 XP и +50 спасибок за лучшее объяснение</p>
-            <div class="form-row">
-              <select id="teacher-award-student" class="flex-1">
-                <option value="">Выберите ученика…</option>
-              </select>
-              <button type="button" class="btn btn-gold" onclick="handleAwardTeacherBadge()">
-                <span class="material-symbols-outlined">star</span>
-                <span>Вручить</span>
-              </button>
-            </div>
-          </div>
-        </section>
-      </main>
+        <button class="theme-toggle-btn" id="theme-toggle-btn" onclick="toggleTheme()" title="Сменить тему">
+          <svg id="theme-icon-moon" class="icon-theme" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+          </svg>
+          <svg id="theme-icon-sun" class="icon-theme hidden" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="5"/>
+            <line x1="12" y1="1" x2="12" y2="3"/>
+            <line x1="12" y1="21" x2="12" y2="23"/>
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+            <line x1="1" y1="12" x2="3" y2="12"/>
+            <line x1="21" y1="12" x2="23" y2="12"/>
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+          </svg>
+        </button>
+      </div>
     </div>
-  </div>
+  </header>
 
-  <!-- Mobile Bottom Navigation (Purple Navbar with Icons) -->
-  <nav class="bottom-nav" aria-label="Мобильная навигация">
-    <button class="nav-item active" data-tab="leaderboard" onclick="switchTab('leaderboard', this)">
-      <span class="material-symbols-outlined">leaderboard</span>
-      <span>Рейтинг</span>
+  <main class="main-content">
+
+    <section id="tab-profile" class="tab-pane active">
+      <div class="sferum-hero-card">
+        <div class="hero-top">
+          <div class="hero-rank-info">
+            <span class="hero-sub">Звание в Лиге Помощников</span>
+            <h2 class="hero-rank" id="profile-level-title">Знаток</h2>
+          </div>
+          <div class="hero-level-chip" id="profile-level-num">1 уровень</div>
+        </div>
+
+        <div class="hero-progress-section">
+          <div class="progress-labels">
+            <span>Прогресс звания</span>
+            <span id="profile-xp-text">0 / 100 XP</span>
+          </div>
+          <div class="sferum-progress-track">
+            <div id="profile-xp-fill" class="sferum-progress-fill" style="width: 0%;"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="stats-row">
+        <div class="stat-box">
+          <div class="stat-icon-wrap">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/>
+            </svg>
+          </div>
+          <div class="stat-number" id="profile-helped">0</div>
+          <div class="stat-caption">Помог в классе</div>
+        </div>
+
+        <div class="stat-box">
+          <div class="stat-icon-wrap">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+          </div>
+          <div class="stat-number" id="profile-questions">0</div>
+          <div class="stat-caption">Задал вопросов</div>
+        </div>
+
+        <div class="stat-box">
+          <div class="stat-icon-wrap">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+            </svg>
+          </div>
+          <div class="stat-number" id="profile-rank">#1</div>
+          <div class="stat-caption">Место в рейтинге</div>
+        </div>
+      </div>
+
+      <div class="sferum-card info-banner">
+        <div class="info-banner-header">
+          <svg class="icon-info" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="16" x2="12" y2="12"/>
+            <line x1="12" y1="8" x2="12.01" y2="8"/>
+          </svg>
+          <h3>Как работает взаимопомощь</h3>
+        </div>
+        <p>Задавайте вопросы в чате класса через команду <code>/ask</code>. Отвечайте на вопросы одноклассников реплаем. Когда автор подтверждает ответ кнопкой «Помог», вам начисляется <b>+50 XP</b> и <b>+1 спасибка</b>.</p>
+      </div>
+    </section>
+
+    <section id="tab-leaderboard" class="tab-pane">
+      <div class="page-title-box">
+        <h2 class="page-title">Рейтинг помощников</h2>
+        <p class="page-desc">Ученики, которые активнее всех помогают классу</p>
+      </div>
+
+      <div class="segmented-wrapper">
+        <div class="segmented-control scope-selector">
+          <button class="seg-btn active" id="scope-class-btn" onclick="setLeaderboardScope('class')">В моём классе</button>
+          <button class="seg-btn" id="scope-school-btn" onclick="setLeaderboardScope('school')">По всей школе</button>
+        </div>
+
+        <div class="segmented-control period-selector">
+          <button class="seg-btn active" id="btn-period-all" onclick="changeLeaderboardPeriod('all_time')">За всё время</button>
+          <button class="seg-btn" id="btn-period-week" onclick="changeLeaderboardPeriod('weekly')">За неделю</button>
+        </div>
+      </div>
+
+      <div class="leaderboard-cards" id="leaderboard-container">
+        <div class="state-loading">Загрузка рейтинга...</div>
+      </div>
+    </section>
+
+    <section id="tab-achievements" class="tab-pane">
+      <div class="page-title-box">
+        <h2 class="page-title">Достижения</h2>
+        <p class="page-desc">Образовательные бейджи за серии помощи и сложные задачи</p>
+      </div>
+
+      <div class="achievements-grid" id="achievements-container">
+        <div class="state-loading">Загрузка наград...</div>
+      </div>
+    </section>
+
+    <section id="tab-rewards" class="tab-pane">
+      <div class="page-title-box">
+        <h2 class="page-title">Школьная лавка наград</h2>
+        <p class="page-desc">Обменивайте спасибки на бонусы от учителей</p>
+      </div>
+
+      <div class="balance-banner">
+        <div class="balance-info">
+          <span class="balance-label">Доступно к обмену:</span>
+          <span class="balance-val"><strong id="shop-coins">0</strong> <span class="coin-unit">спасибок</span></span>
+        </div>
+      </div>
+
+      <div class="rewards-section-title">Каталог наград от учителей</div>
+      <div class="rewards-grid" id="rewards-container">
+        <div class="state-loading">Загрузка витрины...</div>
+      </div>
+
+      <div class="my-claims-card">
+        <h3 class="claims-heading">Мои полученные награды</h3>
+        <div id="my-requests-list" class="claims-list">
+          <p class="empty-state-text">У вас пока нет активных запросов на награды.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-teacher" class="tab-pane">
+      <div class="page-title-box">
+        <h2 class="page-title">Кабинет учителя</h2>
+        <p class="page-desc">Управление бонусами и одобрение заявок учеников</p>
+      </div>
+
+      <div class="teacher-class-bar">
+        <span class="bar-caption">Класс:</span>
+        <select id="teacher-class-select" class="teacher-select" onchange="onTeacherClassChange(this.value)">
+          <option value="all">Все классы</option>
+        </select>
+      </div>
+
+      <div class="sferum-card">
+        <div class="card-header-row">
+          <h3>Входящие заявки на награды</h3>
+          <span class="count-pill" id="pending-claims-count">0</span>
+        </div>
+        <div id="teacher-requests-list" class="teacher-claims-list">
+          <div class="state-loading">Загрузка заявок...</div>
+        </div>
+      </div>
+
+      <div class="sferum-card">
+        <h3>Вручить «Выбор учителя»</h3>
+        <p class="card-subtext">Отметьте ученика за самое понятное объяснение (+100 XP и +20 спасибок).</p>
+        <div class="award-form-row">
+          <select id="teacher-award-student" class="sferum-input flex-1">
+            <option value="">Выберите ученика...</option>
+          </select>
+          <button type="button" class="sferum-btn btn-primary" onclick="handleAwardTeacherBadge()">Вручить</button>
+        </div>
+      </div>
+
+      <div class="sferum-card">
+        <h3>Добавить новую награду</h3>
+        <p class="card-subtext">Создайте награду для вашего класса или всей школы.</p>
+        <form id="create-reward-form" onsubmit="handleCreateReward(event)">
+          <div class="form-field">
+            <label class="field-label">Название награды</label>
+            <input type="text" id="rew-title" class="sferum-input" placeholder="Например: Освобождение от одного устного ДЗ" required>
+          </div>
+          <div class="form-field">
+            <label class="field-label">Описание</label>
+            <input type="text" id="rew-desc" class="sferum-input" placeholder="Условия и порядок применения" required>
+          </div>
+          <div class="form-row-compact">
+            <div class="form-field flex-1">
+              <label class="field-label">Стоимость (спасибки)</label>
+              <input type="number" id="rew-price" class="sferum-input" value="30" min="1" max="500" required>
+            </div>
+            <div class="form-field flex-1">
+              <label class="field-label">Для какого класса</label>
+              <select id="rew-chat-select" class="sferum-input">
+                <option value="all">Для всей школы</option>
+              </select>
+            </div>
+          </div>
+          <button type="submit" class="sferum-btn btn-primary full-width">Опубликовать награду</button>
+        </form>
+      </div>
+    </section>
+
+  </main>
+
+  <nav class="bottom-tabbar">
+    <button class="tab-item active" onclick="switchTab('profile', this)">
+      <div class="tab-icon">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+          <circle cx="12" cy="7" r="4"/>
+        </svg>
+      </div>
+      <span class="tab-text">Профиль</span>
     </button>
-    <button class="nav-item" data-tab="rewards" onclick="switchTab('rewards', this)">
-      <span class="material-symbols-outlined">shopping_bag</span>
-      <span>Лавка</span>
+
+    <button class="tab-item" onclick="switchTab('leaderboard', this)">
+      <div class="tab-icon">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+        </svg>
+      </div>
+      <span class="tab-text">Рейтинг</span>
     </button>
-    <button class="nav-item" data-tab="gigachat" onclick="switchTab('gigachat', this)">
-      <span class="material-symbols-outlined">smart_toy</span>
-      <span>ГигаЧат</span>
+
+    <button class="tab-item" onclick="switchTab('achievements', this)">
+      <div class="tab-icon">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="8" r="7"/>
+          <polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88"/>
+        </svg>
+      </div>
+      <span class="tab-text">Ачивки</span>
     </button>
-    <button class="nav-item" data-tab="achievements" onclick="switchTab('achievements', this)">
-      <span class="material-symbols-outlined">military_tech</span>
-      <span>Ачивки</span>
+
+    <button class="tab-item" onclick="switchTab('rewards', this)">
+      <div class="tab-icon">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="20 12 20 22 4 22 4 12"/>
+          <rect x="2" y="7" width="20" height="5"/>
+          <line x1="12" y1="22" x2="12" y2="7"/>
+          <path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/>
+          <path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/>
+        </svg>
+      </div>
+      <span class="tab-text">Лавка</span>
     </button>
-    <button class="nav-item" data-tab="profile" onclick="switchTab('profile', this)">
-      <span class="material-symbols-outlined">person</span>
-      <span>Профиль</span>
-    </button>
-    <button class="nav-item" id="nav-teacher-btn-mobile" data-tab="teacher" onclick="switchTab('teacher', this)" style="display: none;">
-      <span class="material-symbols-outlined">school</span>
-      <span>Учитель</span>
+
+    <button class="tab-item" id="nav-teacher-btn" onclick="switchTab('teacher', this)">
+      <div class="tab-icon">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 10v6M2 10l10-5 10 5-10 5z"/>
+          <path d="M6 12v5c3 3 9 3 12 0v-5"/>
+        </svg>
+      </div>
+      <span class="tab-text">Учитель</span>
     </button>
   </nav>
 
-  <!-- Modal: Class Picker (Выбор разных чатов) -->
-  <div id="class-modal" class="modal-overlay hidden" onclick="closeClassPicker(event)">
-    <div class="modal-card" onclick="event.stopPropagation()">
-      <div class="modal-header">
-        <h3 class="block-title" style="display: flex; align-items: center; gap: 8px;">
-          <span class="material-symbols-outlined" style="color: var(--sf-purple);">school</span>
-          Выбор чата класса
-        </h3>
-        <button type="button" class="btn-close" onclick="closeClassPicker()">&times;</button>
+  <div id="class-modal" class="modal-backdrop hidden" onclick="closeClassModal(event)">
+    <div class="modal-sheet">
+      <div class="sheet-handle"></div>
+      <div class="sheet-header">
+        <h3 class="sheet-title">Учебный класс</h3>
+        <button class="sheet-close" onclick="closeClassModal()">✕</button>
       </div>
-      <p class="muted">Выберите класс для просмотра рейтинга и лавки наград:</p>
-      <div id="class-list-container" class="class-list-container">
-        <div class="loading-spinner">Загрузка чатов…</div>
+      <div class="sheet-classes-list" id="sheet-classes-list">
       </div>
     </div>
   </div>
 
-  <!-- Confetti Canvas -->
-  <canvas id="confetti-canvas" class="confetti-canvas"></canvas>
-
-  <!-- Toast -->
   <div id="toast" class="toast hidden"></div>
 
   <script src="app.js"></script>

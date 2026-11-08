@@ -1,13 +1,17 @@
 import os
-from sqlalchemy import func, inspect, select, text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlmodel import SQLModel, select, delete, or_, text
 from app.config import get_settings
 from app.database.models import (
-    Base,
     Achievement,
+    Answer,
+    Chat,
+    ChatMember,
     Question,
     Reward,
+    RewardClaim,
     User,
+    UserAchievement,
     DEFAULT_ACHIEVEMENTS,
 )
 
@@ -28,66 +32,92 @@ elif db_url.startswith("sqlite:///"):
 engine = create_async_engine(db_url)
 async_session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
-def _migrate_sqlite(sync_conn):
-    insp = inspect(sync_conn)
-    tables = set(insp.get_table_names())
-    if "users" in tables:
-        cols = {c["name"] for c in insp.get_columns("users")}
-        for col, ddl in {
-            "report_token": "TEXT",
-            "hints_used": "INTEGER DEFAULT 0",
-            "hints_on": "TEXT",
-            "pending_xp": "INTEGER DEFAULT 0",
-            "pending_coins": "INTEGER DEFAULT 0",
-            "help_streak": "INTEGER DEFAULT 0",
-            "streak_best": "INTEGER DEFAULT 0",
-            "last_help_on": "TEXT",
-        }.items():
-            if col not in cols:
-                sync_conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {ddl}"))
-    if "questions" in tables:
-        cols = {c["name"] for c in insp.get_columns("questions")}
-        for col, ddl in {
-            "ask_mid": "TEXT",
-            "image_url": "TEXT",
-            "is_exemplar": "INTEGER DEFAULT 0",
-            "exemplar_note": "TEXT",
-            "nudge_sent_at": "DATETIME",
-        }.items():
-            if col not in cols:
-                sync_conn.execute(text(f"ALTER TABLE questions ADD COLUMN {col} {ddl}"))
-    if "answers" in tables:
-        cols = {c["name"] for c in insp.get_columns("answers")}
-        if "quality" not in cols:
-            sync_conn.execute(text("ALTER TABLE answers ADD COLUMN quality TEXT"))
-    if "rewards" in tables:
-        cols = {c["name"] for c in insp.get_columns("rewards")}
-        for col, ddl in {
-            "max_per_student": "INTEGER DEFAULT 1",
-            "stock": "INTEGER",
-            "group_chat_id": "TEXT",
-        }.items():
-            if col not in cols:
-                sync_conn.execute(text(f"ALTER TABLE rewards ADD COLUMN {col} {ddl}"))
-    if "class_settings" in tables:
-        cols = {c["name"] for c in insp.get_columns("class_settings")}
-        for col, ddl in {
-            "title": "TEXT",
-            "last_digest_on": "TEXT",
-            "exam_until": "TEXT",
-            "exam_subjects": "TEXT",
-            "digest_enabled": "INTEGER DEFAULT 1",
-            "teacher_max_id": "TEXT",
-            "setup_done": "INTEGER DEFAULT 0",
-        }.items():
-            if col not in cols:
-                sync_conn.execute(text(f"ALTER TABLE class_settings ADD COLUMN {col} {ddl}"))
-
+READY_REWARDS = [
+    {
+        "created_by_teacher_id": "teacher_admin",
+        "chat_id": None,
+        "title": "Освобождение от одного домашнего задания",
+        "description": "Возможность не сдавать или сдать позже любое обычное домашнее задание по согласованию с учителем.",
+        "cost_spasibki": 50,
+        "is_active": True,
+    },
+    {
+        "created_by_teacher_id": "teacher_admin",
+        "chat_id": None,
+        "title": "Выбор соседа по парте на неделю",
+        "description": "Право выбрать соседа по парте на уроках в течение одной учебной недели.",
+        "cost_spasibki": 35,
+        "is_active": True,
+    },
+    {
+        "created_by_teacher_id": "teacher_admin",
+        "chat_id": None,
+        "title": "Индивидуальная консультация учителя",
+        "description": "20 минут персонального разбора трудных тем и задач перед контрольной работой.",
+        "cost_spasibki": 25,
+        "is_active": True,
+    },
+    {
+        "created_by_teacher_id": "teacher_admin",
+        "chat_id": None,
+        "title": "Иммунитет от ответа у доски на 1 урок",
+        "description": "Возможность пропустить вызов к доске на одном уроке по вашему выбору.",
+        "cost_spasibki": 40,
+        "is_active": True,
+    },
+    {
+        "created_by_teacher_id": "teacher_admin",
+        "chat_id": None,
+        "title": "Своя тема школьного проекта",
+        "description": "Право защитить проект или доклад на самостоятельно выбранную интересную тему.",
+        "cost_spasibki": 30,
+        "is_active": True,
+    },
+    {
+        "created_by_teacher_id": "teacher_admin",
+        "chat_id": None,
+        "title": "Право пересдачи самостоятельной работы",
+        "description": "Возможность переписать одну самостоятельную работу для повышения четвертной оценки.",
+        "cost_spasibki": 45,
+        "is_active": True,
+    },
+    {
+        "created_by_teacher_id": "teacher_admin",
+        "chat_id": None,
+        "title": "Дополнительный балл к проверочной",
+        "description": "Плюс один балл к итоговой оценке за одну проверочную работу в четверти.",
+        "cost_spasibki": 60,
+        "is_active": True,
+    },
+    {
+        "created_by_teacher_id": "teacher_admin",
+        "chat_id": None,
+        "title": "Ассистент учителя на уроке",
+        "description": "Помощь педагогу в подготовке интерактивных материалов и проведении урока.",
+        "cost_spasibki": 20,
+        "is_active": True,
+    },
+    {
+        "created_by_teacher_id": "teacher_admin",
+        "chat_id": None,
+        "title": "Музыкальный плейлист на перемене",
+        "description": "Право поставить подборку любимых треков на перемене в классе.",
+        "cost_spasibki": 15,
+        "is_active": True,
+    },
+    {
+        "created_by_teacher_id": "teacher_admin",
+        "chat_id": None,
+        "title": "Диплом знатока и помощника школы",
+        "description": "Именная почётная грамота от учителя за активную взаимовыручку для школьного портфолио.",
+        "cost_spasibki": 70,
+        "is_active": True,
+    },
+]
 
 async def init_db():
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await conn.run_sync(_migrate_sqlite)
+        await conn.run_sync(SQLModel.metadata.create_all)
 
     async with async_session_factory() as session:
         res = await session.execute(select(Achievement).limit(1))
@@ -95,67 +125,40 @@ async def init_db():
             for item in DEFAULT_ACHIEVEMENTS:
                 session.add(Achievement(**item))
 
-            demo_users = [
-                User(max_user_id="1001", display_name="Аркадий", role="student", balance_spasibki=18, xp=480, rank="Знаток"),
-                User(max_user_id="1002", display_name="Маша", role="student", balance_spasibki=9, xp=290, rank="Знаток"),
-                User(max_user_id="1003", display_name="Иван", role="student", balance_spasibki=3, xp=110, rank="Любитель"),
-                User(max_user_id="9999", display_name="Мария Ивановна", role="teacher", balance_spasibki=0, xp=0, rank="Учитель"),
-                User(max_user_id="teacher_1", display_name="Учитель", role="teacher", balance_spasibki=0, xp=0, rank="Учитель"),
-            ]
-            for u in demo_users:
-                session.add(u)
+        rew_res = await session.execute(select(Reward).limit(1))
+        if rew_res.scalar_one_or_none() is None:
+            for r in READY_REWARDS:
+                session.add(Reward(**r))
 
-            demo_rewards = [
-                Reward(created_by_teacher_id="9999", title="Освобождение от одного ДЗ", description="Можно сдать одно домашнее задание позже или не сдавать", cost_spasibki=50, is_active=True),
-                Reward(created_by_teacher_id="9999", title="Выбор соседа по парте", description="Возможность пересесть на неделю к выбранному однокласснику", cost_spasibki=30, is_active=True),
-                Reward(created_by_teacher_id="9999", title="Консультация с учителем", description="30 минут индивидуального разбора трудной темы перед контрольной", cost_spasibki=20, is_active=True),
-                Reward(created_by_teacher_id="9999", title="Своя тема проекта", description="Право выбрать нестандартную тему для школьного проекта", cost_spasibki=40, is_active=True),
-            ]
-            for r in demo_rewards:
-                session.add(r)
+        dummy_user_ids = ["1001", "1002", "1003", "1004", "1005", "9999", "teacher_1", "student_demo", "test_user"]
+        await session.execute(delete(ChatMember).where(ChatMember.user_max_id.in_(dummy_user_ids)))
+        await session.execute(delete(User).where(User.max_user_id.in_(dummy_user_ids)))
+        await session.execute(delete(Question).where(Question.author_max_id.in_(dummy_user_ids)))
+        await session.execute(delete(Answer).where(Answer.author_max_id.in_(dummy_user_ids)))
+        await session.execute(delete(UserAchievement).where(UserAchievement.user_max_id.in_(dummy_user_ids)))
+        await session.execute(delete(RewardClaim).where(RewardClaim.student_max_id.in_(dummy_user_ids)))
+        await session.execute(delete(Chat).where(Chat.max_chat_id.in_(["chat_7b", "chat_8a"])))
 
-            session.add(Question(
-                group_chat_id="1",
-                group_message_id="demo-exemplar",
-                author_max_id="1002",
-                text="Кто может помочь с сочинением по «Капитанской дочке»? Нужен план.",
-                subject="Гуманитарные",
-                status="resolved",
-                is_exemplar=True,
-                exemplar_note="План: экспозиция — встреча с вожатым; завязка — бунт; кульминация — милость Пугачёва; финал — честь Гринева.",
-            ))
+        try:
+            await session.execute(text("ALTER TABLE questions ADD COLUMN user_message_id VARCHAR"))
             await session.commit()
+        except Exception:
+            pass
 
-        open_n = (await session.execute(select(func.count()).select_from(Question).where(Question.status == "open"))).scalar_one()
-        if not open_n:
-            session.add(Question(
-                group_chat_id="1",
-                group_message_id="demo-open-geom",
-                author_max_id="1003",
-                text="Как решить №245 по геометрии? Не могу понять теорему Пифагора в этой задаче.",
-                subject="Точные науки",
-                status="open",
-            ))
-            session.add(Question(
-                group_chat_id="1",
-                group_message_id="demo-open-math",
-                author_max_id="1001",
-                text="Кто поможет с уравнением по математике?",
-                subject="Точные науки",
-                status="open",
-            ))
-            await session.commit()
+        dialog_subq = select(Chat.max_chat_id).where(
+            or_(
+                Chat.title == "Диалог",
+                Chat.title.ilike("%диалог%"),
+                Chat.max_chat_id.in_(select(User.max_user_id)),
+            )
+        )
+        bad_chat_ids = (await session.execute(dialog_subq)).scalars().all()
+        if bad_chat_ids:
+            await session.execute(delete(ChatMember).where(ChatMember.chat_max_id.in_(bad_chat_ids)))
+            await session.execute(delete(Chat).where(Chat.max_chat_id.in_(bad_chat_ids)))
 
-        existing_codes = {a.code for a in (await session.execute(select(Achievement))).scalars().all()}
-        added = False
-        for item in DEFAULT_ACHIEVEMENTS:
-            if item["code"] not in existing_codes:
-                session.add(Achievement(**item))
-                added = True
-        if added:
-            await session.commit()
+        await session.commit()
 
 async def get_db_session():
     async with async_session_factory() as session:
         yield session
-
